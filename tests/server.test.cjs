@@ -65,3 +65,33 @@ test('HEAD and canonical console routing work', async () => {
   assert.equal(redirect.status, 308);
   assert.equal(redirect.headers.get('location'), '/admin/');
 });
+test('host-based split serves terminal only on the terminal host', async () => {
+  const saved = [process.env.SITE_HOST, process.env.TERMINAL_HOST];
+  delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
+  process.env.SITE_HOST = 'site.test';
+  process.env.TERMINAL_HOST = 'term.test';
+  const split = require('../OpenNEXT-preview-server.cjs').createAppServer();
+  await new Promise(resolve => split.listen(0, '127.0.0.1', resolve));
+  const http = require('node:http');
+  const get = (route, host) => new Promise((resolve, reject) => {
+    http.get({host: '127.0.0.1', port: split.address().port, path: route, headers: {host}}, res => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => resolve({status: res.statusCode, headers: {get: n => res.headers[n]}, text: async () => body}));
+    }).on('error', reject);
+  });
+  try {
+    assert.match(await (await get('/', 'term.test')).text(), /Capacity Terminal/);
+    assert.equal((await get('/admin/', 'term.test')).status, 404);
+    assert.equal((await get('/OpenNEXT-admin.js', 'term.test')).status, 404);
+    assert.equal((await get('/admin/', 'site.test')).status, 200);
+    const redirect = await get('/terminal', 'site.test');
+    assert.equal(redirect.status, 308);
+    assert.equal(redirect.headers.get('location'), 'https://term.test/');
+  } finally {
+    split.closeAllConnections();
+    await new Promise(resolve => split.close(resolve));
+    for (const [i, k] of ['SITE_HOST', 'TERMINAL_HOST'].entries()) saved[i] === undefined ? delete process.env[k] : process.env[k] = saved[i];
+    delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
+  }
+});
