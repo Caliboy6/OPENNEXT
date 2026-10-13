@@ -4,6 +4,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const {getMarket, getNews} = require('./OpenNEXT-market-feed.cjs');
+const {createPricingService} = require('./OpenNEXT-pricing-service.cjs');
+const {createPricingRouter} = require('./OpenNEXT-pricing-api.cjs');
 
 // Only browser assets are served. Source-only configuration and local files
 // outside this allowlist are never exposed by the preview HTTP server.
@@ -16,6 +18,7 @@ const files = new Set([
   'OpenNEXT-terminal.js', 'OpenNEXT-terminal.css',
   'OpenNEXT-auth.js', 'OpenNEXT-auth.css',
   'OpenNEXT-admin-console.html', 'OpenNEXT-admin.js', 'OpenNEXT-admin.css',
+  'OpenNEXT-provider-console.js', 'OpenNEXT-provider-console.css', 'OpenNEXT-provider-logos.js',
 ]);
 const types = {
   '.html': 'text/html; charset=utf-8',
@@ -29,12 +32,14 @@ const SITE_HOST = (process.env.SITE_HOST || '').toLowerCase();
 const TERMINAL_HOST = (process.env.TERMINAL_HOST || '').toLowerCase();
 const adminFile = name => name.startsWith('admin/') || name.startsWith('OpenNEXT-admin');
 
-function createAppServer() {
-  return http.createServer(async (req, res) => {
+function createAppServer(options = {}) {
+  const pricing = options.pricingService || createPricingService({dataDir:options.dataDir});
+  const pricingRoute = createPricingRouter(pricing, {env:options.env || process.env});
+  const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    if (!['GET', 'HEAD'].includes(req.method)) {
+    if (!['GET', 'HEAD'].includes(req.method) && !String(req.url).startsWith('/api/admin/pricing/')) {
       res.writeHead(405, {Allow: 'GET, HEAD'});
       res.end('Method not allowed');
       return;
@@ -49,6 +54,7 @@ function createAppServer() {
     }
     const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].split(':')[0].trim().toLowerCase();
     const onTerminal = Boolean(TERMINAL_HOST) && host === TERMINAL_HOST;
+    if (await pricingRoute(req, res, new URL(req.url, 'http://localhost'), {onTerminal})) return;
     if (TERMINAL_HOST && SITE_HOST) {
       if (!onTerminal && pathname === '/terminal') {
         res.writeHead(308, {Location: 'https://' + TERMINAL_HOST + '/'});
@@ -101,6 +107,9 @@ function createAppServer() {
     }
     fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   });
+  server.pricing = pricing;
+  server.on('close', () => {pricing.close().catch(() => {});});
+  return server;
 }
 
 if (require.main === module) {
@@ -115,6 +124,7 @@ if (require.main === module) {
     const actualPort = server.address().port;
     console.log('OpenNEXT website: http://' + host + ':' + actualPort + '/');
     console.log('Operations Console: http://' + host + ':' + actualPort + '/admin/');
+    server.pricing.startScheduler();
   });
 }
 

@@ -1,43 +1,88 @@
 (() => {
-  const catalog = [
-    ['H100 SXM',80,2.30,2.99,'NVIDIA_H100','NVLink · 400 Gb/s IB',112],
-    ['H100 PCIe',80,1.94,2.62,null,'PCIe Gen 5 · 100 Gb/s',72],
-    ['H200',141,3.45,4.69,null,'NVLink · 400 Gb/s IB',96],
-    ['B200',180,3.20,8.50,'NVIDIA_B200','NVLink 5 · 800 Gb/s IB',64],
-    ['B300',288,5.76,9.40,null,'NVLink 5 · 800 Gb/s IB',40],
-    ['GB200 NVL72',186,4.95,8.85,null,'NVL72 rack · liquid cooled',144],
-    ['GB300 NVL72',279,7.35,11.80,null,'NVL72 rack · liquid cooled',72],
-    ['A100 80GB',80,1.49,2.80,'NVIDIA_A100_SXM','NVLink · 200 Gb/s IB',160],
-    ['A100 PCIe',80,2.39725,2.39725,'NVIDIA_A100','PCIe · 100 Gb/s',56],
-    ['L40S',48,1.49,1.671,'NVIDIA_L40S','PCIe Gen 4 · 100 Gb/s',128],
-    ['RTX PRO 6000 Blackwell',96,1.18,1.76,null,'PCIe Gen 5 · 100 Gb/s',64],
-    ['RTX 5090',32,.62,.89,null,'PCIe Gen 5 · 25 Gb/s',80],
-    ['RTX 4090',24,.32,.48,null,'PCIe Gen 4 · 10 Gb/s',192],
-    ['AMD MI300X',192,1.85,3.99,'AMD_MI300X','Infinity Fabric · 400 Gb/s',64],
-    ['AMD MI325X',256,2,4.615,'AMD_MI325X','Infinity Fabric · 400 Gb/s',32],
-    ['AMD MI355X',288,2.59,2.59,'AMD_MI355X','Infinity Fabric · 800 Gb/s',32],
-    ['NVIDIA GH200',96,1.99,1.99,'NVIDIA_GH200','Grace Hopper · 200 Gb/s',48]
-  ].map((a,i)=>({name:a[0],memory:a[1],spot:a[2],onDemand:a[3],vultrType:a[4],network:a[5],capacity:a[6],seed:i+1}));
-  const regions=[{name:'US East',code:'us-east-1',city:'N. Virginia',factor:1},{name:'US West',code:'us-west-2',city:'Oregon',factor:.98},{name:'Singapore',code:'ap-southeast-1',city:'Singapore',factor:1.12},{name:'Frankfurt',code:'eu-central-1',city:'Frankfurt',factor:1.08},{name:'Tokyo',code:'ap-northeast-1',city:'Tokyo',factor:1.19},{name:'Mumbai',code:'ap-south-1',city:'Mumbai',factor:.96},{name:'Seoul',code:'ap-northeast-2',city:'Seoul',factor:1.15},{name:'Dubai',code:'me-central-1',city:'Dubai',factor:1.17}];
-  const suppliers=['Northstar Compute','Atlas Grid','Meridian Cloud','Pacific Compute','Helix Infrastructure','Vertex Capacity','Nimbus Systems','Orion GPU','Cedar Data','Cloud Harbor','Summit Compute','Stratus AI','Aperture Cloud','Kite Infrastructure','Nova Compute','Birch Systems','Aster Capacity','Bluefield AI','Mosaic Compute','Frontier Grid','Harbor Labs','Evergreen GPU','Arbor Cloud','Radiant Systems'];
+  'use strict';
+  const catalog=[
+    ['H100',80,'H100'],['H100 SXM',80,'H100'],['H100 PCIe',80,'H100'],['H200',141,'H200'],
+    ['B200',180,'B200'],['B300',288,'B300'],['GB200 Grace Blackwell',186,'GB200'],['GB200 NVL72',186,'GB200'],
+    ['GB300 NVL72',279,'GB300'],['A100 80GB',80,'A100'],['A100 (all memory sizes)','40 / 80','A100'],
+    ['A100 PCIe',80,'A100'],['L40S',48,'L40S'],['RTX PRO 6000 Blackwell',96,'RTX PRO 6000'],
+    ['RTX 5090',32,'RTX 5090'],['RTX 4090',24,'RTX 4090'],['AMD MI300X',192,'MI300X'],
+    ['AMD MI325X',256,'MI325X'],['AMD MI355X',288,'MI355X'],['NVIDIA GH200',96,'GH200'],
+    ['A10G',24,'A10G'],['L4',24,'L4'],['T4',16,'T4'],['T4G',16,'T4G'],['AMD V520',8,'V520'],
+    ['RTX PRO 4500',32,'RTX PRO 4500']
+  ].map((a,i)=>({name:a[0],memory:a[1],canonical:a[2],spot:null,onDemand:null,network:'Instance topology confirmed in supplier quote',seed:i+1}));
+  const regions=[
+    {name:'US East',code:'us-east-1',city:'N. Virginia'},{name:'US East · Ohio',code:'us-east-2',city:'Ohio'},
+    {name:'US West',code:'us-west-2',city:'Oregon'},{name:'Singapore',code:'ap-southeast-1',city:'Singapore'},
+    {name:'Frankfurt',code:'eu-central-1',city:'Frankfurt'},{name:'Ireland',code:'eu-west-1',city:'Dublin'},
+    {name:'Tokyo',code:'ap-northeast-1',city:'Tokyo'},{name:'Mumbai',code:'ap-south-1',city:'Mumbai'},
+    {name:'Seoul',code:'ap-northeast-2',city:'Seoul'},{name:'Dubai',code:'me-central-1',city:'Dubai'}
+  ];
   const news=[
     {source:'AMD',date:'12 Oct 2026',title:'Introducing AMD Helion, Agentic AI Compute at Rack Scale',url:'https://ir.amd.com/news-events/press-releases/detail/1301/introducing-amd-helion-agentic-ai-compute-at-rack-scale'},
     {source:'NVIDIA',date:'8 Oct 2026',title:'NVIDIA commits $1 billion to advance US science over the next five years',url:'https://nvidianews.nvidia.com/news/nvidia-commits-1-billion-to-advance-us-science-over-the-next-five-years'},
     {source:'NVIDIA',date:'1 Oct 2026',title:'How NVIDIA AI factories maximize return on investment',url:'https://blogs.nvidia.com/blog/productive-durable-fungible-ai-factories/'},
     {source:'AMD',date:'31 Aug 2026',title:'AMD, Cisco and HUMAIN expand Saudi Arabia’s AI infrastructure',url:'https://ir.amd.com/news-events/press-releases/detail/1298/amd-cisco-and-humain-expand-saudi-arabias-ai-infrastructure-as-amd-instinct-systems-go-live'}
   ];
-  let livePlans=[],fetchedAt=null,feedStatus='cached';
-  const money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
-  function base(model,term){return term==='On-demand'?model.onDemand:term==='AMM'?model.spot*1.055:model.spot;}
-  function offers(filters){const m=catalog.find(x=>x.name===filters.model)||catalog[0],r=regions.filter(x=>filters.region==='All regions'||x.name===filters.region),count=Number(filters.count)||8;return Array.from({length:24},(_,i)=>{
-    const region=r[i%r.length]||regions[0],discount=count>=32?.935:count>=8?.975:1.025,rate=base(m,filters.term)*region.factor*discount*(.965+(i%6)*.032+Math.floor(i/6)*.007+(m.seed%4)*.008),available=Math.max(count,Math.floor((m.capacity+(i%5)*16)/count)*count);
-    return {id:`${m.seed}-${region.code}-${i}-${filters.term}`,model:m.name,provider:suppliers[(i+m.seed)%suppliers.length],region:region.name,regionCode:region.code,city:region.city,term:filters.term,count,price:+rate.toFixed(2),available,delivery:5+(i*7+m.seed*3)%58,rating:+(4.67+((i*3+m.seed)%27)/100).toFixed(2),response:4+(i*3+m.seed)%22,uptime:+(99.90+((i+m.seed)%9)/100).toFixed(2),memory:m.memory,network:m.network,fit:98-(i%8)*3,reviews:19+i*11+m.seed*3,validUntil:new Date(Date.now()+6*3600000).toISOString()};
-  }).sort((a,b)=>a.price-b.price);}
-  function history(offer,period='1M'){
-    const length=36,seed=catalog.find(x=>x.name===offer.model)?.seed||1,providerSeed=String(offer.provider||offer.region||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0)%19,range={'1D':24,'1W':168,'1M':720,'3M':2160,'1Y':8760}[period]||720;
-    return Array.from({length},(_,i)=>{const x=i/(length-1),trend=(x-1)*(.035+(seed%5)*.015+(providerSeed%4)*.004),wave=Math.sin(x*Math.PI*(2+seed%3)+seed*.6)*.022+Math.sin(x*Math.PI*6+providerSeed*.25)*.006;return {time:Date.now()-(1-x)*range*3600000,value:+(offer.price*(1+trend+wave)).toFixed(4)};});
+  let records=[],meta={status:'loading',message:'Connecting to the server price cache.'},pricePending=null;
+  const histories=new Map(),historyPending=new Map();
+  const money=n=>n===null||n===undefined||!Number.isFinite(Number(n))?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:4}).format(Number(n));
+  const names={aws:'AWS',vultr:'Vultr',lambda:'Lambda',shadeform:'Shadeform'};
+  const regionCode=value=>regions.find(r=>r.name===value)?.code||value;
+  const regionLabel=value=>regions.find(r=>r.code===value)?.name||(value==='unspecified'?'Region not specified':value);
+  const modelOf=name=>catalog.find(m=>m.name===name)||{name,canonical:name,memory:null};
+  function matches(row,filters={}){
+    const m=modelOf(filters.model||filters.gpuModel);
+    if(filters.model&&row.gpuModel!==m.canonical)return false;
+    if(['A100 80GB','A100 PCIe'].includes(filters.model)&&row.gpuMemoryGb!==80)return false;
+    if(/PCIe/i.test(filters.model||'')&&!/pcie/i.test(row.formFactor||''))return false;
+    if(/SXM/i.test(filters.model||'')&&!/sxm/i.test(row.formFactor||''))return false;
+    if(/NVL72/i.test(filters.model||'')&&!/nvl72/i.test(row.formFactor||''))return false;
+    if(filters.region&&filters.region!=='All regions'&&row.region!==regionCode(filters.region))return false;
+    if(filters.term&&row.term!==filters.term)return false;
+    if(filters.count&&row.gpuCount!==Number(filters.count))return false;
+    return true;
   }
-  function reference(m){const plan=livePlans.find(p=>p.gpu_type===m.vultrType);return {source:m.vultrType?'Vultr public bare-metal plans':'OpenNEXT indicative reference',url:m.vultrType?'https://www.vultr.com/pricing/#cloud-gpu':'https://packet.ai/demand',updated:fetchedAt||'2026-10-12T00:00:00Z',status:feedStatus,locations:plan?.locations||[],nodeGPUs:plan?.gpu_count||null,publicPrice:m.vultrType?m.onDemand:null};}
-  async function refresh(){try{const res=await fetch('/api/market',{signal:AbortSignal.timeout(8000)});if(!res.ok)return;const data=await res.json();livePlans=data.plans||[];feedStatus=data.status||'cached';fetchedAt=data.fetchedAt;for(const m of catalog){const p=livePlans.find(x=>x.gpu_type===m.vultrType);if(p&&p.gpu_count>0){if(Number(p.hourly_cost)>0)m.onDemand=Number(p.hourly_cost)/p.gpu_count;if(Number(p.hourly_cost_preemptible)>0)m.spot=Number(p.hourly_cost_preemptible)/p.gpu_count;}}return data;}catch{return null;}}
-  window.ONMarket={catalog,regions,news,money,offers,history,reference,refresh,base};
+  function offers(filters){
+    const m=modelOf(filters.model);
+    return records.filter(row=>matches(row,filters)).map(row=>({
+      id:row.recordId,recordId:row.recordId,model:filters.model,provider:(names[row.provider]||row.provider)+(row.underlyingProvider?' · '+row.underlyingProvider:''),
+      sourceProvider:row.provider,region:regionLabel(row.region),regionCode:row.region,city:regionLabel(row.region),term:row.term,
+      count:row.gpuCount,price:row.perGpuHourly,instanceHourly:row.instanceHourly,instanceType:row.instanceType,
+      available:null,availability:row.availability,delivery:null,rating:null,response:null,uptime:null,
+      memory:row.gpuMemoryGb??m.memory,network:m.network,fit:null,reviews:null,validUntil:null,
+      observedAt:row.observedAt,effectiveAt:row.effectiveAt,sourceUrl:row.sourceUrl,priceKind:row.priceKind,
+      stale:row.stale,currency:row.currency,operatingSystem:row.operatingSystem,tenancy:row.tenancy
+    })).sort((a,b)=>a.price-b.price);
+  }
+  function base(model,term){const prices=records.filter(r=>matches(r,{model:model?.name,term})).map(r=>r.perGpuHourly);return prices.length?Math.min(...prices):null;}
+  function historyKey(filters){const q=new URLSearchParams({provider:'aws',gpuModel:modelOf(filters.model).canonical,region:filters.region==='All regions'?'all':regionCode(filters.region),term:filters.term,period:filters.period||'1M',gpuCount:String(filters.count||8)});if(['A100 80GB','A100 PCIe'].includes(filters.model))q.set('gpuMemoryGb','80');if(/PCIe/i.test(filters.model))q.set('formFactor','PCIe');if(/SXM/i.test(filters.model))q.set('formFactor','SXM');if(/NVL72/i.test(filters.model))q.set('formFactor','NVL72');return q.toString();}
+  function historyFor(filters){return histories.get(historyKey(filters))?.data||{series:[],meta:{status:'loading',message:'Loading AWS observations…'}};}
+  async function ensureHistory(filters){
+    const copy={model:filters.model,region:filters.region,term:filters.term,period:filters.period,count:filters.count};
+    const key=historyKey(copy),cached=histories.get(key);
+    if(cached&&Date.now()-cached.at<30000)return false;
+    if(historyPending.has(key))return historyPending.get(key);
+    const pending=(async()=>{
+      try{const response=await fetch('/api/pricing/history?'+key,{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('History unavailable');const data=await response.json();
+        // Memory/form variants must not inherit a different hardware price.
+        if(['A100 80GB','A100 PCIe'].includes(copy.model)||/PCIe|SXM|NVL72/i.test(copy.model)){const eligible=new Set(records.filter(r=>matches(r,copy)).map(r=>r.recordId));data.series=(data.series||[]).filter(s=>eligible.has(s.recordId));}
+        histories.set(key,{at:Date.now(),data});return true;
+      }catch{histories.set(key,{at:Date.now(),data:{series:[],meta:{status:'error',message:'AWS history is unavailable. No replacement curve has been generated.'}}});return true;}
+      finally{historyPending.delete(key);}
+    })();historyPending.set(key,pending);return pending;
+  }
+  function chartSeries(filters){
+    const data=historyFor(filters),all=(data.series||[]).filter(s=>s.points?.length),out=[];
+    for(const series of all){if(out.length>=3)break;if(!out.some(s=>s.region===series.region))out.push(series);}
+    for(const series of all){if(out.length>=3)break;if(!out.includes(series))out.push(series);}
+    return {series:out,meta:data.meta};
+  }
+  function history(offer){if(!offer)return [];for(const item of histories.values()){const series=item.data.series?.find(s=>s.recordId===offer.recordId);if(series)return series.points;}return [];}
+  function reference(model){const rows=records.filter(r=>r.provider==='aws'&&matches(r,{model:model.name,term:'On-demand'}));return {source:'AWS public On-demand catalog',url:'https://aws.amazon.com/ec2/pricing/on-demand/',updated:meta.fetchedAt,status:meta.status,locations:[...new Set(rows.map(r=>r.region))],nodeGPUs:null,publicPrice:rows.length?Math.min(...rows.map(r=>r.perGpuHourly)):null};}
+  async function refresh(){
+    if(pricePending)return pricePending;
+    pricePending=(async()=>{try{const response=await fetch('/api/pricing/prices?limit=5000',{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('Price cache unavailable');const data=await response.json();records=data.records||[];meta=data.meta||{};for(const m of catalog){m.onDemand=base(m,'On-demand');m.spot=base(m,'Spot');}return data;}catch{meta={status:'error',message:'Price API unavailable. Previously collected prices are retained, not replaced with generated values.'};return null;}finally{pricePending=null;}})();return pricePending;
+  }
+  function tickerRows(){return records.filter(r=>Number.isFinite(r.perGpuHourly)).sort((a,b)=>(a.provider==='aws'?0:1)-(b.provider==='aws'?0:1)||a.perGpuHourly-b.perGpuHourly);}
+  window.ONMarket={catalog,regions,news,money,offers,history,reference,refresh,base,ensureHistory,historyFor,chartSeries,tickerRows,regionLabel,modelOf,get records(){return records;},get meta(){return meta;}};
 })();
