@@ -13,3 +13,4 @@ playwright-report/
 Thumbs.db
 *.png
 *.mp4
+.idea/

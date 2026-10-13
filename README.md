@@ -34,6 +34,8 @@ The server binds to localhost by default. Set `HOST` only when intentionally ena
 
 The original landing page is retained, including market listings, procurement flow, supplier sections and the bundled GCI Index Factory animation. The GPU ticker rotates, pauses on hover and exposes a price chart.
 
+The three homepage listing tabs use a horizontal, one-card-at-a-time carousel: five cards on desktop, responsive layouts on smaller screens, hover pause, manual navigation and reduced-motion support. The catalog contains 12 model API reference rates, 14 GPU rental demand records and 10 physical GPU / server reference offers observed on 13 October 2026. Price provenance stays in source metadata rather than appearing on the cards. These are dated observations, not a live inventory feed or firm OpenNEXT quotes.
+
 The terminal includes searchable GPU model / region / GPU count filters, market terms, model-specific charts and comparison data, rotating best/recent matches, quote requests, RFQs, supply onboarding, instances, saved products, quote cart, supplier conversations, account settings and the agent drawer.
 
 ### Operations Console
@@ -46,6 +48,7 @@ The independent team interface includes overview, market datasets, advisory, ord
 | --- | --- |
 | `index.html`, `OpenNEXT-preview-entry.html`, `OpenNEXT-terminal-preview.html` | Main website / terminal entry points |
 | `OpenNEXT-original-homepage.js` / `.css` | Preserved landing-page content and visual system |
+| `OpenNEXT-home-listings.js` / `.css` | Three market-card carousels, dated price metadata and motion controls |
 | `OpenNEXT-gci-index-factory.html` | Homepage animation with bundled resources |
 | `OpenNEXT-auth.js` / `.css` | Authentication UI and local preview account flows |
 | `OpenNEXT-terminal.js` / `.css` | Buyer, seller and broker workflows |

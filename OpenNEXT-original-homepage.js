@@ -40,9 +40,7 @@ function footer(c, compact = false) {
   return `<footer class="public-footer${compact ? ' public-footer-compact' : ''}">${brandLink()}<div class="public-footer-links"><button type="button" data-public-action="info" data-info="contact">${c.contact}</button><button type="button" data-public-action="info" data-info="privacy">${c.privacy}</button>${compact ? '' : `<span>${c.footer}</span>`}</div></footer>`;
 }
 function listings(c) {
-  const names = [c.models, c.rental, c.physical];
-  const panels = c.listingSets.map((rows, i) => `<div class="public-listing-panel public-listing-panel-${i}" role="region" aria-label="${names[i]}"><div class="public-table-scroll"><table class="public-listing-table"><thead><tr><th>${c.side}</th><th>${c.resource}</th><th>${c.spec}</th><th>${c.terms}</th></tr></thead><tbody>${rows.map(row => `<tr><td><span class="public-side-tag">${row[0]}</span></td><td><button class="public-listing-resource" type="button" data-public-action="open-workspace" data-target="${i === 0 ? 'models' : 'gpus'}"${i === 2 ? ' data-mode="hardware"' : i === 1 ? ' data-mode="rental"' : ''}>${row[1]}</button></td><td>${row[2]}</td><td>${row[3]}</td></tr>`).join('')}</tbody></table></div></div>`).join('');
-  return `<div class="public-listing-preview">${names.map((name, i) => `<input class="public-listing-radio" type="radio" name="public-listings" id="public-listings-${i}"${i === 0 ? ' checked' : ''}><label class="public-listing-tab public-listing-tab-${i}" for="public-listings-${i}">${name}</label>`).join('')}<div class="public-listing-panels">${panels}</div></div>`;
+  return window.OpenNEXTListings.render(c);
 }
 
 function gpuTicker() { return window.openNEXTPreviewTicker(); }

@@ -1,0 +1,13 @@
+services:
+  web:
+    build: .
+    platform: linux/amd64
+    image: vishwanetwork/opennext-homepage:latest
+    container_name: opennext-homepage
+    restart: unless-stopped
+    environment:
+      SITE_HOST: opennextlab.ai
+      TERMINAL_HOST: terminal.opennextlab.ai
+    ports:
+      # Only reachable from the server itself; the 1Panel reverse proxy forwards to it.
+      - "127.0.0.1:4188:4188"
