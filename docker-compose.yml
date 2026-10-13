@@ -8,6 +8,7 @@ services:
     environment:
       SITE_HOST: opennextlab.ai
       TERMINAL_HOST: terminal.opennextlab.ai
+      ADMIN_HOST: admin.opennextlab.ai
     ports:
       # Only reachable from the server itself; the 1Panel reverse proxy forwards to it.
       - "127.0.0.1:4188:4188"

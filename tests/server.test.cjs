@@ -66,10 +66,11 @@ test('HEAD and canonical console routing work', async () => {
   assert.equal(redirect.headers.get('location'), '/admin/');
 });
 test('host-based split serves terminal only on the terminal host', async () => {
-  const saved = [process.env.SITE_HOST, process.env.TERMINAL_HOST];
+  const saved = [process.env.SITE_HOST, process.env.TERMINAL_HOST, process.env.ADMIN_HOST];
   delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
   process.env.SITE_HOST = 'site.test';
   process.env.TERMINAL_HOST = 'term.test';
+  process.env.ADMIN_HOST = 'admin.test';
   const split = require('../OpenNEXT-preview-server.cjs').createAppServer();
   await new Promise(resolve => split.listen(0, '127.0.0.1', resolve));
   const http = require('node:http');
@@ -84,14 +85,20 @@ test('host-based split serves terminal only on the terminal host', async () => {
     assert.match(await (await get('/', 'term.test')).text(), /Capacity Terminal/);
     assert.equal((await get('/admin/', 'term.test')).status, 404);
     assert.equal((await get('/OpenNEXT-admin.js', 'term.test')).status, 404);
-    assert.equal((await get('/admin/', 'site.test')).status, 200);
+    const adminRedirect = await get('/admin/', 'site.test');
+    assert.equal(adminRedirect.status, 308);
+    assert.equal(adminRedirect.headers.get('location'), 'https://admin.test/');
+    assert.match(await (await get('/', 'admin.test')).text(), /Operations Console/);
+    assert.equal((await get('/OpenNEXT-admin.js', 'admin.test')).status, 200);
+    assert.equal((await get('/OpenNEXT-terminal.js', 'admin.test')).status, 404);
+    assert.equal((await get('/api/market', 'admin.test')).status, 404);
     const redirect = await get('/terminal', 'site.test');
     assert.equal(redirect.status, 308);
     assert.equal(redirect.headers.get('location'), 'https://term.test/');
   } finally {
     split.closeAllConnections();
     await new Promise(resolve => split.close(resolve));
-    for (const [i, k] of ['SITE_HOST', 'TERMINAL_HOST'].entries()) saved[i] === undefined ? delete process.env[k] : process.env[k] = saved[i];
+    for (const [i, k] of ['SITE_HOST', 'TERMINAL_HOST', 'ADMIN_HOST'].entries()) saved[i] === undefined ? delete process.env[k] : process.env[k] = saved[i];
     delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
   }
 });

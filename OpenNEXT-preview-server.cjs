@@ -23,10 +23,13 @@ const types = {
   '.css': 'text/css; charset=utf-8',
 };
 
-// Optional host-based split. When both are set, the Capacity Terminal is served
-// only on TERMINAL_HOST and everything else (site, /admin/) on SITE_HOST.
+// Optional host-based split. When SITE_HOST and TERMINAL_HOST are set, the
+// Capacity Terminal is served only on TERMINAL_HOST. When ADMIN_HOST is also
+// set, the Operations Console is served only on ADMIN_HOST. The site stays on
+// SITE_HOST.
 const SITE_HOST = (process.env.SITE_HOST || '').toLowerCase();
 const TERMINAL_HOST = (process.env.TERMINAL_HOST || '').toLowerCase();
+const ADMIN_HOST = (process.env.ADMIN_HOST || '').toLowerCase();
 const adminFile = name => name.startsWith('admin/') || name.startsWith('OpenNEXT-admin');
 
 function createAppServer() {
@@ -49,6 +52,19 @@ function createAppServer() {
     }
     const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].split(':')[0].trim().toLowerCase();
     const onTerminal = Boolean(TERMINAL_HOST) && host === TERMINAL_HOST;
+    const onAdmin = Boolean(ADMIN_HOST) && host === ADMIN_HOST;
+    if (ADMIN_HOST && SITE_HOST) {
+      if (!onAdmin && !onTerminal && (pathname === '/admin' || pathname === '/admin/')) {
+        res.writeHead(308, {Location: 'https://' + ADMIN_HOST + '/'});
+        res.end();
+        return;
+      }
+      if (onAdmin && (pathname === '/admin' || pathname === '/admin/')) {
+        res.writeHead(308, {Location: '/'});
+        res.end();
+        return;
+      }
+    }
     if (TERMINAL_HOST && SITE_HOST) {
       if (!onTerminal && pathname === '/terminal') {
         res.writeHead(308, {Location: 'https://' + TERMINAL_HOST + '/'});
@@ -66,7 +82,7 @@ function createAppServer() {
       res.end();
       return;
     }
-    if (pathname === '/api/market' || pathname === '/api/news') {
+    if (!onAdmin && (pathname === '/api/market' || pathname === '/api/news')) {
       try {
         const data = await (pathname === '/api/market' ? getMarket() : getNews());
         res.writeHead(200, {'Content-Type': 'application/json; charset=utf-8'});
@@ -78,12 +94,12 @@ function createAppServer() {
       return;
     }
     const aliases = {
-      '/': onTerminal ? 'OpenNEXT-preview-entry.html' : 'index.html',
+      '/': onAdmin ? 'admin/index.html' : onTerminal ? 'OpenNEXT-preview-entry.html' : 'index.html',
       '/terminal': 'OpenNEXT-preview-entry.html',
       '/admin/': 'admin/index.html',
     };
     const name = aliases[pathname] || pathname.slice(1);
-    if (!files.has(name) || (onTerminal && adminFile(name))) {
+    if (!files.has(name) || (onTerminal && adminFile(name)) || (onAdmin && !adminFile(name))) {
       res.writeHead(404);
       res.end('Not found');
       return;
