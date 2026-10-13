@@ -11,6 +11,7 @@ const files = new Set([
   'index.html', 'admin/index.html',
   'OpenNEXT-preview-entry.html', 'OpenNEXT-terminal-preview.html',
   'OpenNEXT-original-homepage.js', 'OpenNEXT-original-homepage.css',
+  'OpenNEXT-home-listings.js', 'OpenNEXT-home-listings.css',
   'OpenNEXT-gci-index-factory.html', 'OpenNEXT-market-data.js',
   'OpenNEXT-terminal.js', 'OpenNEXT-terminal.css',
   'OpenNEXT-auth.js', 'OpenNEXT-auth.css',
