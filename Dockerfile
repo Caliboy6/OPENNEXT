@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json ./
 COPY *.html *.js *.css *.cjs ./
 COPY admin ./admin
+COPY data ./data
 RUN mkdir -p /app/.opennext-data && chown node:node /app/.opennext-data
 USER node
 EXPOSE 4188

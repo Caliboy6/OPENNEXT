@@ -1,8 +1,9 @@
 'use strict';
 const crypto=require('node:crypto');
+const importedSpotHistory=require('./OpenNEXT-spot-history.cjs');
 
 function equal(a,b){const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y);}
-function createPricingRouter(service,{env=process.env}={}){
+function createPricingRouter(service,{env=process.env,importedHistory=importedSpotHistory}={}){
   const secret=crypto.randomBytes(32),sessions=new Map();
   const token=String(env.OPENNEXT_ADMIN_TOKEN||'');
   const tokenReady=token.length>=24;
@@ -38,12 +39,25 @@ function createPricingRouter(service,{env=process.env}={}){
     out.limit=Math.min(10000,Math.max(1,Number(url.searchParams.get('limit'))||5000));
     return out;
   }
+  function importedFilters(url){
+    const out={};
+    for(const key of ['gpuModel','model','region','gpuCount','gpuMemoryGb','formFactor','instanceType','period','unit','q','search']){
+      if(url.searchParams.has(key)){
+        const value=url.searchParams.get(key);
+        if(value.length>180){const error=Error('History filter is too long');error.status=400;throw error;}
+        out[key]=value;
+      }
+    }
+    return out;
+  }
   return async function route(req,res,url,{onTerminal=false}={}){
     const path=url.pathname;
     if(!path.startsWith('/api/pricing/')&&!path.startsWith('/api/admin/pricing/'))return false;
     try{
       if(path.startsWith('/api/pricing/')){
         if(req.method!=='GET'){send(res,405,{error:'Read-only endpoint'},{Allow:'GET'});return true;}
+        if(path==='/api/pricing/imported-history'){send(res,200,await importedHistory.query(importedFilters(url)));return true;}
+        if(path==='/api/pricing/history-catalog'){send(res,200,await importedHistory.catalog(importedFilters(url)));return true;}
         if(path==='/api/pricing/prices'){send(res,200,await service.getPrices(filters(url)));return true;}
         if(path==='/api/pricing/history'){send(res,200,await service.getHistory({...filters(url),provider:'aws'}));return true;}
         if(path==='/api/pricing/status'){
@@ -95,7 +109,7 @@ function createPricingRouter(service,{env=process.env}={}){
     }catch(error){
       // Never echo upstream request URLs, authorization headers or provider responses.
       const known=Number(error.status||error.statusCode);
-      send(res,[400,401,403,404,409,413,429,501].includes(known)?known:500,{error:known===404?'Provider or record not found':known===501?'This connector requires additional integration':'Pricing operation failed. Check the redacted run record for details.'});
+      send(res,[400,401,403,404,409,413,429,501,503].includes(known)?known:500,{error:known===404?'Provider or record not found':known===501?'This connector requires additional integration':known===503&&path.startsWith('/api/pricing/')?'Uploaded history snapshot is not available':'Pricing operation failed. Check the redacted run record for details.'});
       return true;
     }
   };

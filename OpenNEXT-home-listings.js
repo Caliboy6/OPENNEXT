@@ -1,12 +1,13 @@
 /* Homepage market cards. Prices are dated observations, not firm OpenNEXT stock.
  * Source metadata is intentionally retained for maintenance, not rendered in UI.
- * Model: standard non-cached input/output. Rental: buyer targets, not seller asks.
+ * Model: official references or exact-SKU supplier quotes, labelled separately.
+ * Rental: buyer targets, not seller asks.
  * Hardware: whole-card or whole-server prices; never divide servers into GPUs.
  */
 (() => {
   'use strict';
   const observedAt = '2026-10-13';
-  const models = [
+  const officialModels = [
     {id:'model-gpt-sol',name:'GPT-6.1 Sol',brand:'OpenAI',input:2,output:10,context:'272K price tier',note:'Standard tier · input up to 272K tokens.',sourceUrl:'https://developers.openai.com/api/docs/models/gpt-6.1-sol'},
     {id:'model-claude-sonnet',name:'Claude Sonnet 5.5',brand:'Anthropic',input:2,output:10,context:'1M context',note:'Standard global routing · tools billed separately.',sourceUrl:'https://platform.claude.com/docs/en/about-claude/pricing'},
     {id:'model-gemini-flash',name:'Gemini 3.8 Flash',brand:'Google',input:.75,output:3.75,context:'Paid standard',note:'Current rate through 31 Dec 2026 · thinking included.',sourceUrl:'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.8-flash'},
@@ -15,11 +16,17 @@
     {id:'model-glm',name:'GLM-5.3',brand:'GLM',input:1.40,output:4.40,context:'1M context',note:'Standard USD API rate · reasoning enabled.',sourceUrl:'https://docs.z.ai/guides/overview/pricing'},
     {id:'model-gpt-luna',name:'GPT-6 Luna',brand:'OpenAI',input:.10,output:.50,context:'272K price tier',note:'Standard tier · input up to 272K tokens.',sourceUrl:'https://developers.openai.com/api/docs/models/gpt-6-luna'},
     {id:'model-claude-opus',name:'Claude Opus 5.5',brand:'Anthropic',input:4,output:20,context:'1M context',note:'Standard global routing · Fast mode not included.',sourceUrl:'https://platform.claude.com/docs/en/about-claude/pricing'},
-    {id:'model-gemini-lite',name:'Gemini 3.5 Flash-Lite',brand:'Google',input:.30,output:2.50,context:'Text API',note:'Paid standard text · thinking included.',sourceUrl:'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite'},
+    {id:'model-gemini-lite',sku:'gemini-3.5-flash-lite',name:'Gemini 3.5 Flash-Lite',brand:'Google',input:.30,output:2.50,context:'Text API',note:'Paid standard text · thinking included.',sourceUrl:'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite'},
     {id:'model-deepseek-pro',name:'DeepSeek V4 Pro',brand:'DeepSeek',input:1.32,output:3.96,context:'1M context',note:'V4-Pro-0813 · peak-hour, non-cached rate.',sourceUrl:'https://api-docs.deepseek.com/quick_start/pricing/'},
     {id:'model-gpt-astra',name:'GPT-6 Astra',brand:'OpenAI',input:10,output:50,context:'272K price tier',note:'Standard tier · input up to 272K tokens.',sourceUrl:'https://developers.openai.com/api/docs/models/gpt-6-astra'},
     {id:'model-claude-haiku',name:'Claude Haiku 5.5',brand:'Anthropic',input:.10,output:.50,context:'100K price tier',note:'Input up to 100K · longer requests use a higher tier.',sourceUrl:'https://platform.claude.com/docs/en/about-claude/pricing'},
-  ].map(item => ({...item,kind:'model',priceKind:'public_api_reference',unit:'USD / 1M tokens',observedAt}));
+  ].map(item => ({...item,kind:'model',priceKind:'public_api_reference',sourceLabel:'Official reference',unit:'USD / 1M tokens',observedAt}));
+  const supplierModels = (window.OpenNEXTModelQuotes?.list() || []).map(quote => {
+    const reference = officialModels.find(item => item.sku === quote.sku);
+    return {...quote,id:reference?.id || 'model-quote-'+quote.sku,kind:'model',sourceUrl:null,observedAt:quote.recordedAt};
+  });
+  const supplierSkus = new Set(supplierModels.map(item => item.sku));
+  const models = [...supplierModels,...officialModels.filter(item => !supplierSkus.has(item.sku))];
 
   const rentals = [
     ['rental-h200-128','H200','128','1,024+','Worldwide',12,1.80,'Flexible specification · large-cluster requirement.'],
@@ -51,26 +58,30 @@
     {id:'hardware-hgx-b300',name:'8× HGX B300 server',model:'B300',memory:'8 × 288 GB',form:'8U · SXM',price:580199.40,unit:'server',minimum:'1 server',note:'Complete system · 3 TB DDR5 · NVSwitch.',sourceUrl:'https://configurator.exxactcorp.com/configure/TS4-104366747'},
   ].map(item => ({...item,kind:'hardware',priceKind:'reference_purchase',observedAt}));
 
-  const groups = [models, rentals, hardware];
+  const groups = [rentals, models, hardware];
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const money = value => Number(value).toLocaleString('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2});
+  const tokenMoney = value => Number(value).toLocaleString('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:6});
   const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${({left:'<path d="m14 6-6 6 6 6"/>',right:'<path d="m10 6 6 6-6 6"/>',pause:'<path d="M9 6v12M15 6v12"/>',play:'<path d="m9 5 10 7-10 7V5Z"/>',globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/>'})[name]}</svg>`;
   const metric = (label,value) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`;
+  const action = (item,label,target,intent) => `<button class="on-listing-cta${intent==='buy'?' on-listing-cta-buy':''}" type="button" data-public-action="open-workspace" data-target="${target}" data-listing-selection="${item.id}" data-listing-intent="${intent}"${item.kind==='rental'?' data-mode="rental"':item.kind==='hardware'?' data-mode="hardware"':''}${intent==='buy'?` aria-label="Buy ${escape(item.model)} capacity — request a separate quote"`:''}><span>${label}</span>${icon('right')}</button>`;
 
   function card(item,index) {
     const isModel = item.kind==='model', isRental = item.kind==='rental';
-    const tag = isModel?'API reference':isRental?'Buyer demand':item.unit==='server'?'Complete system':'Physical GPU';
+    const tag = isModel?item.sourceLabel:isRental?'Buyer demand':item.unit==='server'?'Complete system':'Physical GPU';
     const place = isModel?item.brand:isRental?item.region:'NVIDIA';
-    const specs = isModel?metric('Context / tier',item.context)+metric('Billing','Per 1M tokens'):isRental?metric('Total GPUs',item.count)+metric('GPUs / node',8)+metric('Nodes',item.nodes)+metric('Minimum term',item.months+' months'):metric('Memory',item.memory)+metric('Form factor',item.form)+metric('Price unit','Per '+item.unit)+metric('Min. order',item.minimum);
-    const prices = isModel?`<div class="on-listing-token-prices"><div><span>Input / 1M tokens</span><strong>${money(item.input)}</strong></div><div><span>Output / 1M tokens</span><strong>${money(item.output)}</strong></div></div>`:`<div class="on-listing-single-price"><span>${isRental?'Buyer target price':'Reference purchase price'}</span><div><strong>${money(item.price)}</strong><small>${isRental?'/ GPU-hour':'/ '+item.unit}</small></div></div>`;
-    const target = isModel?'models':isRental?'supply':'rfq';
+    const tier = item.priceKind==='supplier_quote' ? item.context.replace('Not specified — confirm in quote','Confirm in quote').replace('context — threshold requires quote confirmation','· confirm threshold') : item.context;
+    const specs = isModel?metric('Context / tier',tier)+metric('Billing','Per 1M tokens'):isRental?metric('Total GPUs',item.count)+metric('GPUs / node',8)+metric('Nodes',item.nodes)+metric('Minimum term',item.months+' months'):metric('Memory',item.memory)+metric('Form factor',item.form)+metric('Price unit','Per '+item.unit)+metric('Min. order',item.minimum);
+    const prices = isModel?`<div class="on-listing-token-prices"><div><span>Input / 1M tokens</span><strong>${tokenMoney(item.input)}</strong></div><div><span>Output / 1M tokens</span><strong>${tokenMoney(item.output)}</strong></div></div>${Number.isFinite(item.cachedInput)?`<div class="on-listing-cached-price" title="Cache billing semantics require quote confirmation"><span>Cache / 1M tokens</span><strong>${tokenMoney(item.cachedInput)}</strong></div>`:''}`:`<div class="on-listing-single-price"><span>${isRental?'Buyer target price':'Reference purchase price'}</span><div><strong>${money(item.price)}</strong><small>${isRental?'/ GPU-hour':'/ '+item.unit}</small></div></div>`;
+    // Buying starts a separate inquiry; a buyer's target is never a supply offer.
+    const actions = isRental?`<div class="on-listing-actions">${action(item,'Buy capacity','rfq','buy')}${action(item,'Offer capacity','supply','offer')}</div>`:action(item,'Request quote',isModel?'models':'rfq','quote');
     const marker=isRental?`<span class="on-listing-urgency">${escape(item.urgency)}</span>`:`<span class="on-listing-card-number">${String(index+1).padStart(2,'0')}</span>`;
-    return `<article class="on-listing-card" data-listing-id="${item.id}" data-listing-index="${index}" role="group" aria-roledescription="slide" aria-label="${index+1} of ${groups[isModel?0:isRental?1:2].length}: ${escape(item.name)}"><div class="on-listing-card-top"><span class="on-listing-kind"><i></i>${tag}</span>${marker}</div><h3>${escape(item.name)}</h3><div class="on-listing-location">${icon('globe')}<span>${escape(place)}</span></div><p class="on-listing-description">${escape(item.note)}</p><dl class="on-listing-specs">${specs}</dl><div class="on-listing-pricing">${prices}<p>${isModel?'Standard, non-cached rate':isRental?'Dedicated cluster · '+item.months+'+ months':item.status||'Price and delivery subject to quote'}</p></div><button class="on-listing-cta" type="button" data-public-action="open-workspace" data-target="${target}" data-listing-selection="${item.id}"${isRental?' data-mode="rental"':item.kind==='hardware'?' data-mode="hardware"':''}><span>${isRental?'Offer capacity':'Request quote'}</span>${icon('right')}</button></article>`;
+    return `<article class="on-listing-card" data-listing-id="${item.id}" data-listing-index="${index}" role="group" aria-roledescription="slide" aria-label="${index+1} of ${groups[isRental?0:isModel?1:2].length}: ${escape(item.name)}"><div class="on-listing-card-top"><span class="on-listing-kind"><i></i>${tag}</span>${marker}</div><h3>${escape(item.name)}</h3><div class="on-listing-location">${icon('globe')}<span>${escape(place)}</span></div><p class="on-listing-description">${escape(item.note)}</p><dl class="on-listing-specs">${specs}</dl><div class="on-listing-pricing">${prices}<p>${isModel?(item.priceKind==='supplier_quote'?'Supplier quote · final terms confirmed on inquiry':'Official reference · standard non-cached rate'):isRental?'Buyer budget · availability requires a separate quote':item.status||'Price and delivery subject to quote'}</p></div>${actions}</article>`;
   }
 
   function render(copy) {
-    const names = [copy.models,copy.rental,copy.physical];
-    return `<div class="public-listing-preview on-listing-carousel" role="region" aria-roledescription="carousel" aria-label="Capacity market listings">${names.map((name,i)=>`<input class="public-listing-radio" type="radio" name="public-listings" id="public-listings-${i}"${i===0?' checked':''}><label class="public-listing-tab public-listing-tab-${i}" for="public-listings-${i}">${escape(name)}</label>`).join('')}<div class="on-listing-controls"><span class="on-listing-position" aria-hidden="true">01 — 05 / ${models.length}</span><button type="button" data-listing-move="-1" aria-label="Previous listing">${icon('left')}</button><button type="button" data-listing-toggle aria-label="Pause listing carousel" aria-pressed="false">${icon('pause')}</button><button type="button" data-listing-move="1" aria-label="Next listing">${icon('right')}</button></div><div class="public-listing-panels">${groups.map((items,i)=>`<div class="public-listing-panel public-listing-panel-${i}" role="region" aria-label="${escape(names[i])}" data-listing-panel="${i}"><div class="on-listing-viewport"><div class="on-listing-track">${items.map(card).join('')}</div></div></div>`).join('')}</div><div class="on-listing-under"><span>USD · Final availability, fees and delivery confirmed by quote.</span><span class="on-listing-motion-hint">Hover to pause</span></div><span class="on-listing-announcement" role="status" aria-live="polite"></span></div>`;
+    const names = [copy.rental,copy.models,copy.physical];
+    return `<div class="public-listing-preview on-listing-carousel" role="region" aria-roledescription="carousel" aria-label="Capacity market listings">${names.map((name,i)=>`<input class="public-listing-radio" type="radio" name="public-listings" id="public-listings-${i}"${i===0?' checked':''}><label class="public-listing-tab public-listing-tab-${i}" for="public-listings-${i}">${escape(name)}</label>`).join('')}<div class="on-listing-controls"><span class="on-listing-position" aria-hidden="true">01 — 05 / ${groups[0].length}</span><button type="button" data-listing-move="-1" aria-label="Previous listing">${icon('left')}</button><button type="button" data-listing-toggle aria-label="Pause listing carousel" aria-pressed="false">${icon('pause')}</button><button type="button" data-listing-move="1" aria-label="Next listing">${icon('right')}</button></div><div class="public-listing-panels">${groups.map((items,i)=>`<div class="public-listing-panel public-listing-panel-${i}" role="region" aria-label="${escape(names[i])}" data-listing-panel="${i}"><div class="on-listing-viewport"><div class="on-listing-track">${items.map(card).join('')}</div></div></div>`).join('')}</div><div class="on-listing-under"><span>USD · Final availability, fees and delivery confirmed by quote.</span><span class="on-listing-motion-hint">Hover to pause</span></div><span class="on-listing-announcement" role="status" aria-live="polite"></span></div>`;
   }
 
   let component = null;

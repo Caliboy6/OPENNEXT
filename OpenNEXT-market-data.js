@@ -8,7 +8,7 @@
     ['RTX 5090',32,'RTX 5090'],['RTX 4090',24,'RTX 4090'],['AMD MI300X',192,'MI300X'],
     ['AMD MI325X',256,'MI325X'],['AMD MI355X',288,'MI355X'],['NVIDIA GH200',96,'GH200'],
     ['A10G',24,'A10G'],['L4',24,'L4'],['T4',16,'T4'],['T4G',16,'T4G'],['AMD V520',8,'V520'],
-    ['RTX PRO 4500',32,'RTX PRO 4500']
+    ['RTX PRO 4500',32,'RTX PRO 4500'],['V100',32,'V100']
   ].map((a,i)=>({name:a[0],memory:a[1],canonical:a[2],spot:null,onDemand:null,network:'Instance topology confirmed in supplier quote',seed:i+1}));
   const regions=[
     {name:'US East',code:'us-east-1',city:'N. Virginia'},{name:'US East · Ohio',code:'us-east-2',city:'Ohio'},
@@ -27,7 +27,7 @@
   const histories=new Map(),historyPending=new Map();
   const money=n=>n===null||n===undefined||!Number.isFinite(Number(n))?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:4}).format(Number(n));
   const names={aws:'AWS',vultr:'Vultr',lambda:'Lambda',shadeform:'Shadeform'};
-  const regionCode=value=>regions.find(r=>r.name===value)?.code||value;
+  const regionCode=value=>regions.find(r=>r.name===value||r.code===value||r.aliases?.includes(value))?.code||value;
   const regionLabel=value=>regions.find(r=>r.code===value)?.name||(value==='unspecified'?'Region not specified':value);
   const modelOf=name=>catalog.find(m=>m.name===name)||{name,canonical:name,memory:null};
   function matches(row,filters={}){
@@ -39,7 +39,7 @@
     if(/NVL72/i.test(filters.model||'')&&!/nvl72/i.test(row.formFactor||''))return false;
     if(filters.region&&filters.region!=='All regions'&&row.region!==regionCode(filters.region))return false;
     if(filters.term&&row.term!==filters.term)return false;
-    if(filters.count&&row.gpuCount!==Number(filters.count))return false;
+    if(filters.count!==undefined&&filters.count!==null&&row.gpuCount!==Number(filters.count))return false;
     return true;
   }
   function offers(filters){
@@ -79,10 +79,16 @@
   }
   function history(offer){if(!offer)return [];for(const item of histories.values()){const series=item.data.series?.find(s=>s.recordId===offer.recordId);if(series)return series.points;}return [];}
   function reference(model){const rows=records.filter(r=>r.provider==='aws'&&matches(r,{model:model.name,term:'On-demand'}));return {source:'AWS public On-demand catalog',url:'https://aws.amazon.com/ec2/pricing/on-demand/',updated:meta.fetchedAt,status:meta.status,locations:[...new Set(rows.map(r=>r.region))],nodeGPUs:null,publicPrice:rows.length?Math.min(...rows.map(r=>r.perGpuHourly)):null};}
+  let importedCatalog=null,catalogPending=null;
+  async function loadHistoryCatalog(){
+    if(importedCatalog)return importedCatalog;
+    if(catalogPending)return catalogPending;
+    catalogPending=(async()=>{try{const r=await fetch('/api/pricing/history-catalog',{signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Catalog unavailable');const data=await r.json();for(const entry of data.regions||[]){const current=regions.find(x=>x.code===entry.code);if(current){current.aliases=[...(current.aliases||[]),current.name];current.name=entry.name;current.city=entry.city||entry.name;}else regions.push({name:entry.name,code:entry.code,city:entry.city||entry.name});}importedCatalog=data;return data;}catch{return null;}finally{catalogPending=null;}})();return catalogPending;
+  }
   async function refresh(){
     if(pricePending)return pricePending;
     pricePending=(async()=>{try{const response=await fetch('/api/pricing/prices?limit=5000',{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error('Price cache unavailable');const data=await response.json();records=data.records||[];meta=data.meta||{};for(const m of catalog){m.onDemand=base(m,'On-demand');m.spot=base(m,'Spot');}return data;}catch{meta={status:'error',message:'Price API unavailable. Previously collected prices are retained, not replaced with generated values.'};return null;}finally{pricePending=null;}})();return pricePending;
   }
   function tickerRows(){return records.filter(r=>Number.isFinite(r.perGpuHourly)).sort((a,b)=>(a.provider==='aws'?0:1)-(b.provider==='aws'?0:1)||a.perGpuHourly-b.perGpuHourly);}
-  window.ONMarket={catalog,regions,news,money,offers,history,reference,refresh,base,ensureHistory,historyFor,chartSeries,tickerRows,regionLabel,modelOf,get records(){return records;},get meta(){return meta;}};
+  window.ONMarket={catalog,regions,news,money,offers,history,reference,refresh,base,ensureHistory,historyFor,chartSeries,tickerRows,regionLabel,regionCode,modelOf,loadHistoryCatalog,get importedCatalog(){return importedCatalog;},get records(){return records;},get meta(){return meta;}};
 })();
