@@ -22,6 +22,12 @@ const types = {
   '.css': 'text/css; charset=utf-8',
 };
 
+// Optional host-based split. When both are set, the Capacity Terminal is served
+// only on TERMINAL_HOST and everything else (site, /admin/) on SITE_HOST.
+const SITE_HOST = (process.env.SITE_HOST || '').toLowerCase();
+const TERMINAL_HOST = (process.env.TERMINAL_HOST || '').toLowerCase();
+const adminFile = name => name.startsWith('admin/') || name.startsWith('OpenNEXT-admin');
+
 function createAppServer() {
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -40,6 +46,20 @@ function createAppServer() {
       res.end('Invalid URL');
       return;
     }
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].split(':')[0].trim().toLowerCase();
+    const onTerminal = Boolean(TERMINAL_HOST) && host === TERMINAL_HOST;
+    if (TERMINAL_HOST && SITE_HOST) {
+      if (!onTerminal && pathname === '/terminal') {
+        res.writeHead(308, {Location: 'https://' + TERMINAL_HOST + '/'});
+        res.end();
+        return;
+      }
+      if (onTerminal && (pathname === '/terminal' || pathname === '/terminal/')) {
+        res.writeHead(308, {Location: '/'});
+        res.end();
+        return;
+      }
+    }
     if (pathname === '/admin' || pathname === '/terminal/') {
       res.writeHead(308, {Location: pathname === '/admin' ? '/admin/' : '/terminal'});
       res.end();
@@ -57,12 +77,12 @@ function createAppServer() {
       return;
     }
     const aliases = {
-      '/': 'index.html',
+      '/': onTerminal ? 'OpenNEXT-preview-entry.html' : 'index.html',
       '/terminal': 'OpenNEXT-preview-entry.html',
       '/admin/': 'admin/index.html',
     };
     const name = aliases[pathname] || pathname.slice(1);
-    if (!files.has(name)) {
+    if (!files.has(name) || (onTerminal && adminFile(name))) {
       res.writeHead(404);
       res.end('Not found');
       return;
