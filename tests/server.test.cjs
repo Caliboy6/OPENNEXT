@@ -1,11 +1,14 @@
 'use strict';
 const {test, before, after} = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const {createAppServer} = require('../OpenNEXT-preview-server.cjs');
 let server;
 let base;
 before(async () => {
-  server = createAppServer();
+  server = createAppServer({dataDir:fs.mkdtempSync(path.join(os.tmpdir(),'opennext-http-test-'))});
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -70,8 +73,7 @@ test('host-based split serves terminal only on the terminal host', async () => {
   delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
   process.env.SITE_HOST = 'site.test';
   process.env.TERMINAL_HOST = 'term.test';
-  process.env.ADMIN_HOST = 'admin.test';
-  const split = require('../OpenNEXT-preview-server.cjs').createAppServer();
+  const split = require('../OpenNEXT-preview-server.cjs').createAppServer({dataDir:fs.mkdtempSync(path.join(os.tmpdir(),'opennext-split-test-'))});
   await new Promise(resolve => split.listen(0, '127.0.0.1', resolve));
   const http = require('node:http');
   const get = (route, host) => new Promise((resolve, reject) => {

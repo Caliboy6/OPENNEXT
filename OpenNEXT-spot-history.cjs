@@ -1,0 +1,251 @@
+'use strict';
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+
+const DAY = 24 * 60 * 60 * 1000;
+const PERIOD_DAYS = Object.freeze({ '1D': 1, '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 });
+const DEFAULT_FILE = path.join(__dirname, 'data', 'gpu-spot-history.json');
+const normal = value => String(value ?? '').trim().toLowerCase();
+const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const valueOrNull = value => value === undefined ? null : value;
+
+function failure(message, status = 400) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function isCalendarDate(value) {
+  if (!datePattern.test(String(value))) return false;
+  const time = Date.parse(value + 'T00:00:00Z');
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
+function numericFilter(filters, name, { integer = false } = {}) {
+  const raw = filters[name];
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+    throw failure(name + ' must be a non-negative ' + (integer ? 'integer' : 'number'));
+  }
+  return value;
+}
+
+function windowFor(asOf, requested = 'ALL') {
+  const period = String(requested || 'ALL').trim().toUpperCase();
+  if (period === 'ALL') return { period, from: null, to: asOf, elapsedDays: null };
+  const days = PERIOD_DAYS[period];
+  if (!days) throw failure('Use period 1D, 1W, 1M, 3M, 6M, 1Y or ALL');
+  // UTC is used only to do arithmetic on civil dates. The source timezone is unknown.
+  const from = new Date(Date.parse(asOf + 'T00:00:00Z') - days * DAY).toISOString().slice(0, 10);
+  return { period, from, to: asOf, elapsedDays: days };
+}
+
+function selectedUnit(raw) {
+  const unit = normal(raw || 'gpu');
+  if (!['gpu', 'instance'].includes(unit)) throw failure('Use unit gpu or instance');
+  return unit;
+}
+
+function dateExtent(series) {
+  let start = null;
+  let end = null;
+  let pointCount = 0;
+  let nullPerGpuPointCount = 0;
+  for (const item of series) {
+    for (const point of item.points || []) {
+      pointCount++;
+      if (point.value == null) nullPerGpuPointCount++;
+      if (typeof point.date === 'string') {
+        if (start === null || point.date < start) start = point.date;
+        if (end === null || point.date > end) end = point.date;
+      }
+    }
+  }
+  return { startDate: start, endDate: end, pointCount, nullPerGpuPointCount };
+}
+
+function createSpotHistoryStore({ filePath = DEFAULT_FILE, readFile = fs.readFile } = {}) {
+  let cached;
+
+  async function load() {
+    if (!cached) {
+      cached = Promise.resolve().then(async () => {
+        let raw;
+        try { raw = await readFile(filePath, 'utf8'); }
+        catch { throw failure('Uploaded GPU history snapshot is not available', 503); }
+        let snapshot;
+        try { snapshot = JSON.parse(String(raw)); }
+        catch { throw failure('Uploaded GPU history snapshot is invalid', 503); }
+        if (snapshot.schemaVersion !== 1 || !isCalendarDate(snapshot.asOf) || !Array.isArray(snapshot.regions) || !Array.isArray(snapshot.series)) {
+          throw failure('Uploaded GPU history snapshot has an unsupported schema', 503);
+        }
+        if (snapshot.series.some(item => !item || !Array.isArray(item.points))) {
+          throw failure('Uploaded GPU history snapshot has an invalid series', 503);
+        }
+        return snapshot;
+      }).catch(error => {
+        // A missing export can become available later; successful snapshots are read once.
+        cached = undefined;
+        throw error;
+      });
+    }
+    return cached;
+  }
+
+  function filterSeries(snapshot, filters) {
+    const model = normal(filters.gpuModel || filters.model);
+    const instance = normal(filters.instanceType);
+    const region = normal(filters.region);
+    const count = numericFilter(filters, 'gpuCount', { integer: true });
+    const memory = numericFilter(filters, 'gpuMemoryGb');
+    const factor = normal(filters.formFactor);
+    const hasFactor = filters.formFactor !== undefined && filters.formFactor !== '';
+    const regionCodes = new Set(snapshot.regions.filter(item => [item.code, item.name, item.city].some(value => normal(value) === region)).map(item => normal(item.code)));
+    if (region) regionCodes.add(region);
+    return snapshot.series.filter(item => {
+      if (model && model !== 'all' && ![item.gpuModel, item.sourceGpuModel].some(value => normal(value) === model)) return false;
+      if (instance && instance !== 'all' && normal(item.instanceType) !== instance) return false;
+      if (region && !['all', 'all regions'].includes(region) && !regionCodes.has(normal(item.region))) return false;
+      if (count !== undefined && item.gpuCount !== count) return false;
+      if (memory !== undefined && item.gpuMemoryGb !== memory) return false;
+      if (hasFactor && (['null', 'unknown', 'unspecified'].includes(factor) ? item.formFactor != null : normal(item.formFactor) !== factor)) return false;
+      return true;
+    });
+  }
+
+  function metadata(snapshot, chosenSeries, unit, window) {
+    return {
+      ...(snapshot.meta || {}),
+      sourceKind: snapshot.sourceKind || 'uploaded_daily_history',
+      snapshotAsOf: snapshot.asOf,
+      asOf: snapshot.asOf,
+      aggregation: 'daily_average',
+      dateTimezone: 'not supplied',
+      timestampSemantics: 'Calendar dates from the uploaded source; no intraday observation time or timezone is inferred.',
+      currency: snapshot.currency || 'USD',
+      currencyVerification: 'Source currency is carried forward without independent verification.',
+      unit: unit === 'instance' ? 'USD/instance-hour' : 'USD/GPU-hour',
+      sourceUnit: snapshot.unit || 'USD/GPU-hour',
+      selectedUnit: unit,
+      window,
+      windowReference: 'snapshot_as_of',
+      windowSemantics: 'Inclusive calendar-date endpoints separated by elapsedDays; complete daily data contains elapsedDays + 1 observations.',
+      allSeriesReturned: true,
+      seriesCount: chosenSeries.length,
+      sourceSeriesCount: snapshot.series.length,
+      ...dateExtent(chosenSeries),
+      liveInventory: false,
+      livePrices: false,
+      zeroCountPolicy: 'Zero-count or fractional instances retain their original null per-GPU values. Use unit=instance for their whole-instance price.',
+      displayValuePolicy: 'Original value/high/low fields are retained; displayValue/displayHigh/displayLow follow the selected unit.',
+    };
+  }
+
+  async function query(filters = {}) {
+    const snapshot = await load();
+    const unit = selectedUnit(filters.unit);
+    const window = windowFor(snapshot.asOf, filters.period);
+    const matched = filterSeries(snapshot, filters);
+    const series = matched.map(item => ({
+      ...item,
+      unit: unit === 'instance' ? 'USD/instance-hour' : 'USD/GPU-hour',
+      points: item.points.filter(point => window.period === 'ALL' || (typeof point.date === 'string' && point.date >= window.from && point.date <= window.to)).map(point => ({
+        ...point,
+        displayValue: valueOrNull(unit === 'instance' ? point.instanceHourly : point.value),
+        displayHigh: valueOrNull(unit === 'instance' ? point.instanceHigh : point.high),
+        displayLow: valueOrNull(unit === 'instance' ? point.instanceLow : point.low),
+      })),
+    }));
+    const activeRegions = new Set(matched.map(item => normal(item.region)));
+    return {
+      schemaVersion: 1,
+      asOf: snapshot.asOf,
+      sourceKind: snapshot.sourceKind || 'uploaded_daily_history',
+      currency: snapshot.currency || 'USD',
+      unit: unit === 'instance' ? 'USD/instance-hour' : 'USD/GPU-hour',
+      filters: { ...filters, period: window.period, unit },
+      regions: snapshot.regions.filter(item => activeRegions.has(normal(item.code))).map(item => ({ ...item })),
+      series,
+      meta: metadata(snapshot, series, unit, window),
+    };
+  }
+
+  async function catalog(filters = {}) {
+    const snapshot = await load();
+    const matched = filterSeries(snapshot, filters);
+    const specs = new Map();
+    for (const item of matched) {
+      const key = JSON.stringify([item.gpuModel, item.instanceType, item.gpuCount, item.gpuMemoryGb, item.formFactor ?? null]);
+      if (!specs.has(key)) specs.set(key, {
+        gpuModel: item.gpuModel,
+        sourceGpuModel: item.sourceGpuModel ?? item.gpuModel,
+        instanceType: item.instanceType,
+        gpuCount: item.gpuCount,
+        gpuMemoryGb: item.gpuMemoryGb,
+        formFactor: item.formFactor ?? null,
+        providers: new Set(), regions: new Set(), zones: new Set(), seriesCount: 0, pointCount: 0,
+      });
+      const spec = specs.get(key);
+      spec.providers.add(item.provider);
+      spec.regions.add(item.region);
+      if (item.zone != null) spec.zones.add(item.zone);
+      spec.seriesCount++;
+      spec.pointCount += item.points.length;
+    }
+    const specifications = [...specs.values()].map(spec => ({ ...spec, providers: [...spec.providers], regions: [...spec.regions], zones: [...spec.zones] }));
+    const modelMap = new Map();
+    for (const spec of specifications) {
+      if (!modelMap.has(spec.gpuModel)) modelMap.set(spec.gpuModel, { name: spec.gpuModel, gpuModel: spec.gpuModel, gpuCounts: new Set(), gpuMemoryGb: new Set(), formFactors: new Set(), instanceTypes: new Set(), seriesCount: 0 });
+      const model = modelMap.get(spec.gpuModel);
+      model.gpuCounts.add(spec.gpuCount);
+      if (spec.gpuMemoryGb != null) model.gpuMemoryGb.add(spec.gpuMemoryGb);
+      if (spec.formFactor != null) model.formFactors.add(spec.formFactor);
+      model.instanceTypes.add(spec.instanceType);
+      model.seriesCount += spec.seriesCount;
+    }
+    const models = [...modelMap.values()].map(model => ({ ...model, gpuCounts: [...model.gpuCounts].sort((a, b) => a - b), gpuMemoryGb: [...model.gpuMemoryGb].sort((a, b) => a - b), formFactors: [...model.formFactors], instanceTypes: [...model.instanceTypes] }));
+    const byRegion = new Map();
+    const matchedRegionCounts = new Map();
+    for (const item of snapshot.series) {
+      const code = normal(item.region);
+      if (!byRegion.has(code)) byRegion.set(code, new Map());
+      const key = JSON.stringify([item.gpuModel, item.instanceType, item.gpuCount, item.gpuMemoryGb, item.formFactor ?? null]);
+      byRegion.get(code).set(key, { gpuModel: item.gpuModel, instanceType: item.instanceType, gpuCount: item.gpuCount, gpuMemoryGb: item.gpuMemoryGb, formFactor: item.formFactor ?? null });
+    }
+    for (const item of matched) matchedRegionCounts.set(normal(item.region), (matchedRegionCounts.get(normal(item.region)) || 0) + 1);
+    const search = normal(filters.q || filters.search);
+    const regions = snapshot.regions.map(item => {
+      const regionSpecs = [...(byRegion.get(normal(item.code))?.values() || [])];
+      const count = matchedRegionCounts.get(normal(item.code)) || 0;
+      return {
+        ...item,
+        label: item.name + ' (' + item.code + ')',
+        searchText: [item.code, item.name, item.city].filter(Boolean).join(' ').toLowerCase(),
+        available: count > 0,
+        seriesCount: count,
+        gpuModels: [...new Set(regionSpecs.map(spec => spec.gpuModel))],
+        gpuCounts: [...new Set(regionSpecs.map(spec => spec.gpuCount))].sort((a, b) => a - b),
+        instanceTypes: [...new Set(regionSpecs.map(spec => spec.instanceType))],
+        specifications: regionSpecs,
+      };
+    }).filter(item => !search || item.searchText.includes(search));
+    return {
+      schemaVersion: 1,
+      asOf: snapshot.asOf,
+      sourceKind: snapshot.sourceKind || 'uploaded_daily_history',
+      currency: snapshot.currency || 'USD',
+      unit: snapshot.unit || 'USD/GPU-hour',
+      regions,
+      models,
+      specifications,
+      meta: { ...metadata(snapshot, matched, 'gpu', windowFor(snapshot.asOf, 'ALL')), sourceRegionCount: snapshot.regions.length, regionCount: regions.length },
+    };
+  }
+
+  return { load, query, catalog };
+}
+
+const defaultStore = createSpotHistoryStore();
+module.exports = { createSpotHistoryStore, load: defaultStore.load, query: defaultStore.query, catalog: defaultStore.catalog, PERIOD_DAYS };
