@@ -8,6 +8,7 @@ services:
     environment:
       SITE_HOST: opennextlab.ai
       TERMINAL_HOST: terminal.opennextlab.ai
+      ADMIN_HOST: admin.opennextlab.ai
       OPENNEXT_PRICING_DATA_DIR: /app/.opennext-data
       OPENNEXT_ADMIN_TOKEN: ${OPENNEXT_ADMIN_TOKEN:-}
       OPENNEXT_TRUST_PROXY: ${OPENNEXT_TRUST_PROXY:-0}
