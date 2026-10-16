@@ -14,7 +14,7 @@ async function setup(t){
   updateProvider:(id,data)=>{calls.push({id,data});return {id,...data};},
   setCredential:(id,value)=>{calls.push({id,value});return {credential:value};}
  };
- const route=createPricingRouter(service,{env:{OPENNEXT_ADMIN_TOKEN:TOKEN,OPENNEXT_TRUST_PROXY:'1'}});
+ const route=createPricingRouter(service,{env:{OPENNEXT_ADMIN_TOKEN:TOKEN,OPENNEXT_TRUST_PROXY:'1'},capacity:{query:filters=>({terms:['Spot','On-demand','Reserved'],points:[],filters})}});
  const server=http.createServer(async(req,res)=>{if(!await route(req,res,new URL(req.url,'http://localhost'),{onTerminal:req.headers.host==='terminal.example'})){res.writeHead(404);res.end();}});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  t.after(()=>new Promise(r=>{server.closeAllConnections();server.close(r);}));
@@ -28,6 +28,14 @@ test('public prices are read-only; histories force AWS; status retains real coun
  assert.equal(d.filters.provider,'aws');assert.equal(d.filters.gpuMemoryGb,80);assert.equal(d.filters.gpuCount,8);
  assert.equal((await request('/api/pricing/prices',{method:'POST'})).status,405);
  d=await (await request('/api/pricing/status')).json();assert.equal(d.providers[0].recordCount,4);assert.equal(d.providers[0].lastRunAt,'2026-10-13T00:00:00Z');
+});
+test('capacity comparison is public read-only and validates exact hardware filters',async t=>{
+ const {request}=await setup(t);
+ const response=await request('/api/pricing/capacity-history?gpuModel=A10G&gpuCount=1&region=us-west-2&period=1D');
+ assert.equal(response.status,200);
+ assert.deepEqual((await response.json()).terms,['Spot','On-demand','Reserved']);
+ for(const query of ['gpuCount=-1','gpuCount=1.5','gpuMemoryGb=bad','period=invalid'])assert.equal((await request('/api/pricing/capacity-history?'+query)).status,400);
+ assert.equal((await request('/api/pricing/capacity-history',{method:'POST'})).status,405);
 });
 test('remote and forwarded requests cannot use loopback admin bypass; Terminal blocks admin',async t=>{
  const {request}=await setup(t);const url='/api/admin/pricing/providers';

@@ -53,6 +53,18 @@ test('news endpoint preserves source attribution', async () => {
   assert(data.articles.length > 0);
   assert(data.articles.every(article => article.source && article.title && /^https:\/\//.test(article.url)));
 });
+test('preview server routes price and history requests to the pricing API', async () => {
+  const prices = await fetch(base + '/api/pricing/prices');
+  assert.equal(prices.status, 200);
+  assert(Array.isArray((await prices.json()).records));
+  const catalog = await fetch(base + '/api/pricing/history-catalog');
+  assert.equal(catalog.status, 200);
+  assert((await catalog.json()).regions.length > 0);
+  const history = await fetch(base + '/api/pricing/imported-history?gpuModel=H100&gpuCount=8&period=1M');
+  assert.equal(history.status, 200);
+  assert((await history.json()).series.length > 0);
+  assert.equal((await fetch(base + '/api/admin/pricing/providers', {headers: {'X-Forwarded-For': '203.0.113.1'}})).status, 401);
+});
 test('private files and unsupported operations are not served', async () => {
   for (const route of ['/.git/config', '/.env', '/OpenNEXT-market-feed.cjs', '/package.json', '/missing']) {
     assert.equal((await fetch(base + route)).status, 404, route);
@@ -73,6 +85,7 @@ test('host-based split serves terminal only on the terminal host', async () => {
   delete require.cache[require.resolve('../OpenNEXT-preview-server.cjs')];
   process.env.SITE_HOST = 'site.test';
   process.env.TERMINAL_HOST = 'term.test';
+  process.env.ADMIN_HOST = 'admin.test';
   const split = require('../OpenNEXT-preview-server.cjs').createAppServer({dataDir:fs.mkdtempSync(path.join(os.tmpdir(),'opennext-split-test-'))});
   await new Promise(resolve => split.listen(0, '127.0.0.1', resolve));
   const http = require('node:http');
