@@ -6,7 +6,9 @@
     {name: 'On-demand', color: '#6389ae', dash: '8 5', note: 'No commitment'},
     {name: 'Reserved', color: '#ac8748', dash: '2 5', note: '1 year · No upfront'},
   ];
-  const cache = new Map(), hidden = new Set();
+  const cache = new Map();
+  // The chart draws the price type chosen in Market terms; Spot is the default.
+  const shown = S => terms.find(term => term.name === S.term) || terms[0];
   let timer = null, active = null, generation = 0;
   const number = value => typeof value === 'number' && Number.isFinite(value);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
@@ -32,7 +34,7 @@
     if (label) label.textContent = (terms.some(t => t.name === S.term) ? S.term.toUpperCase() : 'SPOT') + ' / GPU-HR';
     const price = document.getElementById('marketPrice'); if (price) price.textContent = money(selected?.value);
     const caption = document.getElementById('historyPrimaryCaption'); if (caption) caption.textContent = 'Same-offering reference';
-    const count = document.getElementById('marketRecords'); if (count) count.textContent = String((data.points || []).filter(point => terms.some(term => number(point.values[term.name]?.value))).length);
+    const count = document.getElementById('marketRecords'); if (count) count.textContent = String((data.points || []).filter(point => number(point.values[shown(S).name]?.value)).length);
     const change = document.getElementById('marketChange');
     if (change) {
       const values = (data.points || []).map(point => point.values[S.term]?.value).filter(number);
@@ -42,14 +44,10 @@
     }
   }
   function markup(S, data) {
-    const points = data.points || [];
-    const values = points.flatMap(p => terms.filter(term => !hidden.has(term.name)).map(term => p.values[term.name]?.value)).filter(number);
-    const cards = terms.map(term => {
-      const entry = data.latest?.[term.name];
-      return `<button class="capacity-rate ${hidden.has(term.name) ? 'muted' : ''}" data-capacity-term="${term.name}" aria-pressed="${!hidden.has(term.name)}" style="--rate-color:${term.color}"><span><i style="border-top-style:${term.name === 'Spot' ? 'solid' : term.name === 'Reserved' ? 'dotted' : 'dashed'}"></i>${term.name}</span><strong>${money(entry?.value)}</strong><small>${term.note}</small><small>${number(entry?.value) ? timeLabel(entry.observedAt) : 'No matching quote'}</small></button>`;
-    }).join('');
-    const controls = `<div class="capacity-heading"><div><span class="eyebrow">GPU PRICE COMPARISON</span><h3>Three ways to rent compute</h3></div><span class="capacity-live ${data.meta?.sourceIssue ? 'partial' : ''}"><i></i>${data.meta?.syncing ? 'Updating' : data.meta?.sourceIssue ? 'Partial coverage' : 'Auto refresh · 30s'}</span></div><div class="capacity-rates" aria-label="Price type legend">${cards}</div><div class="history-controls"><div class="periods">${['1D','1W','1M','3M'].map(period => `<button class="period ${S.period === period ? 'active' : ''}" data-act="period" data-value="${period}">${period}</button>`).join('')}</div><span class="capacity-unit">USD / GPU-hour · One offering, three prices</span></div>`;
-    if (!values.length) return controls + `<div class="aws-history-empty"><h3>${data.meta?.syncing ? 'Collecting price observations…' : 'No prices for this configuration yet'}</h3><p>Missing prices remain empty. Try another model, region or GPU count.</p><button class="btn secondary small" data-capacity-example>Compare A10G · 1 GPU</button></div>`;
+    const points = data.points || [], term = shown(S);
+    const values = points.map(p => p.values[term.name]?.value).filter(number);
+    const controls = `<div class="history-controls"><div class="periods">${['1D','1W','1M','3M'].map(period => `<button class="period ${S.period === period ? 'active' : ''}" data-act="period" data-value="${period}">${period}</button>`).join('')}</div><span class="capacity-unit">USD / GPU-hour · ${term.name}${term.name === 'Reserved' ? ' · 1 year, no upfront' : ''}</span></div>`;
+    if (!values.length) return controls + `<div class="aws-history-empty"><h3>${data.meta?.syncing ? 'Collecting price observations…' : `No ${term.name} prices for this configuration yet`}</h3><p>Missing prices remain empty. Try another model, region, GPU count or market term.</p><button class="btn secondary small" data-capacity-example>View A10G · 8 GPUs</button></div>`;
     const w = Math.max(360, Math.min(1000, (document.getElementById('capacityHistory')?.clientWidth || 900) - 40));
     const h = 320, left = 28, right = 92, top = 24, bottom = 43;
     const low = Math.min(...values), high = Math.max(...values), pad = Math.max((high - low) * .16, high * .05, .03);
@@ -60,7 +58,7 @@
     const grid = Array.from({length: 4}, (_, index) => {const value = min + (max - min) * index / 3, py = y(value);return `<line x1="${left}" x2="${w - right}" y1="${py}" y2="${py}" stroke="#e3ebe5" stroke-dasharray="4 7"/><text x="${w - right + 14}" y="${py + 4}" class="history-axis">$${value.toFixed(2)}</text>`;}).join('');
     // Points arrive as consecutive buckets; an empty bucket or a gap breaks the line instead of joining it.
     const gap = 1.5 * (data.meta?.bucketMinutes || 5) * 60000;
-    const paths = terms.filter(term => !hidden.has(term.name)).map(term => {
+    const paths = [term].map(term => {
       const runs = [];
       for (const point of points) {
         const value = point.values[term.name]?.value, time = Date.parse(point.time), run = runs.at(-1);
@@ -75,10 +73,10 @@
     const tickCount = w < 600 ? 3 : 4;
     const ticks = from === to ? [from] : Array.from({length: tickCount}, (_, i) => from + (to - from) * i / (tickCount - 1));
     const axis = ticks.map((time, i) => `<text class="history-axis" x="${x(time)}" y="${h - 12}" text-anchor="${ticks.length === 1 ? 'middle' : i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'}">${esc(new Date(time).toLocaleString('en-GB', {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC'}))}</text>`).join('');
-    const rows = points.filter(point => terms.some(term => number(point.values[term.name]?.value))).slice(-12).reverse().map(point => `<tr><td>${timeLabel(point.time)}</td>${terms.map(term => `<td>${money(point.values[term.name]?.value)}</td>`).join('')}</tr>`).join('');
-    return controls + `<div class="history-plot capacity-plot"><svg data-plot-width="${w}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(S.model)} Spot, On-demand and Reserved price comparison">${grid}${paths}${axis}<line class="capacity-crosshair" y1="${top}" y2="${h - bottom}" stroke="#90a493" stroke-dasharray="3 4" visibility="hidden"/><rect class="capacity-hit" x="${left}" y="${top}" width="${w - left - right}" height="${h - top - bottom}" fill="transparent" tabindex="0" role="slider" aria-label="Price observation time" aria-valuemin="0" aria-valuemax="${points.length - 1}" aria-valuenow="${points.length - 1}"/></svg><div class="history-tooltip capacity-tooltip" hidden></div></div><div class="capacity-footnote"><span>${bucketLabel(data.meta?.bucketMinutes)} buckets · UTC · No inferred inventory</span><span>Updated ${timeLabel(data.meta?.lastSync)}</span></div><div class="capacity-method">${esc(referenceText(S, data.meta))} All three prices come from this one offering: the same GPU configuration from the same supplier in the same region. Reserved: 12 months, no upfront. Quotes do not confirm capacity.${points.length < 4 ? ' History is building from real observations.' : ''}</div>${!number(data.latest?.Reserved?.value) ? '<div class="capacity-coverage">This offering has no 1-year reserved rate. <button class="text-link" data-capacity-example>View a complete A10G comparison</button></div>' : ''}<details class="capacity-data"><summary>View recorded prices</summary><div class="table-scroll"><table><thead><tr><th>TIME · UTC</th><th>SPOT</th><th>ON-DEMAND</th><th>RESERVED · 1 YEAR</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+    const rows = points.filter(point => number(point.values[term.name]?.value)).slice(-12).reverse().map(point => `<tr><td>${timeLabel(point.time)}</td><td>${money(point.values[term.name].value)}</td></tr>`).join('');
+    return controls + `<div class="history-plot capacity-plot"><svg data-plot-width="${w}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(S.model)} ${term.name} price history">${grid}${paths}${axis}<line class="capacity-crosshair" y1="${top}" y2="${h - bottom}" stroke="#90a493" stroke-dasharray="3 4" visibility="hidden"/><rect class="capacity-hit" x="${left}" y="${top}" width="${w - left - right}" height="${h - top - bottom}" fill="transparent" tabindex="0" role="slider" aria-label="Price observation time" aria-valuemin="0" aria-valuemax="${points.length - 1}" aria-valuenow="${points.length - 1}"/></svg><div class="history-tooltip capacity-tooltip" hidden></div></div><div class="capacity-footnote"><span>${bucketLabel(data.meta?.bucketMinutes)} buckets · UTC · No inferred inventory</span><span>Updated ${timeLabel(data.meta?.lastSync)}</span></div><div class="capacity-method">${esc(referenceText(S, data.meta))} Spot, On-demand and Reserved all come from this one offering (same GPU configuration, supplier and region); switch Market terms to compare them. Reserved: 12 months, no upfront. Quotes do not confirm capacity.${points.length < 4 ? ' History is building from real observations.' : ''}</div><details class="capacity-data"><summary>View recorded prices</summary><div class="table-scroll"><table><thead><tr><th>TIME · UTC</th><th>${esc(term.name.toUpperCase())}${term.name === 'Reserved' ? ' · 1 YEAR' : ''}</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
   }
-  function render() {return '<section id="capacityHistory" class="capacity-history"><div class="aws-history-empty"><h3>Loading Spot, On-demand and Reserved prices…</h3></div></section>';}
+  function render() {return '<section id="capacityHistory" class="capacity-history"><div class="aws-history-empty"><h3>Loading prices…</h3></div></section>';}
   function bind(S) {
     if (timer) clearTimeout(timer);
     const target = document.getElementById('capacityHistory'); if (!target) {generation++; active = null; return;}
@@ -95,11 +93,12 @@
         selected = Math.max(0, Math.min(points.length - 1, index)); const point = points[selected];
         const px = from === to ? (plotWidth - 64) / 2 : 28 + (Date.parse(point.time) - from) / (to - from) * innerWidth;
         const cross = svg.querySelector('.capacity-crosshair'); cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
-        tip.innerHTML = `<strong>${timeLabel(point.time)}</strong>${terms.map(term => `<div class="capacity-tip-row"><span>${term.name}</span><b>${money(point.values[term.name]?.value)}</b></div>`).join('')}<small>USD / GPU-hour · — means not observed</small>`;
+        const term = shown(snapshot);
+        tip.innerHTML = `<strong>${timeLabel(point.time)}</strong><div class="capacity-tip-row"><span>${term.name}</span><b>${money(point.values[term.name]?.value)}</b></div><small>USD / GPU-hour · — means not observed</small>`;
         tip.hidden = false; const width = svg.getBoundingClientRect().width;
         tip.style.left = Math.max(4, Math.min(width - 250, px / plotWidth * width + 12)) + 'px'; tip.style.top = '12px';
         hit.setAttribute('aria-valuenow', String(selected));
-        hit.setAttribute('aria-valuetext', timeLabel(point.time) + '; ' + terms.map(term => term.name + ' ' + money(point.values[term.name]?.value)).join('; '));
+        hit.setAttribute('aria-valuetext', timeLabel(point.time) + '; ' + term.name + ' ' + money(point.values[term.name]?.value));
       }
       hit.addEventListener('pointermove', event => {
         const rect = svg.getBoundingClientRect(), x = (event.clientX - rect.left) / rect.width * plotWidth;
@@ -118,9 +117,7 @@
       header(snapshot, value); bindPlot();
     }
     target.onclick = event => {
-      const toggle = event.target.closest('[data-capacity-term]');
-      if (toggle && data) {const name = toggle.dataset.capacityTerm; if (hidden.has(name)) hidden.delete(name); else if (hidden.size < 2) hidden.add(name); toggle.blur(); repaint(data);}
-      if (event.target.closest('[data-capacity-example]')) {Object.assign(window.ONPreview.state, {model: 'A10G', count: 1, region: 'All regions'}); window.ONPreview.navigate('market');}
+      if (event.target.closest('[data-capacity-example]')) {Object.assign(window.ONPreview.state, {model: 'A10G', count: 8, region: 'All regions'}); window.ONPreview.navigate('market');}
     };
     async function refresh() {
       if (generation !== token || !target.isConnected) return;
