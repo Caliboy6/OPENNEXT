@@ -251,3 +251,23 @@ test('bot list prices supply On-demand and one-year no-upfront Reserved with the
   assert.equal(first('Reserved'), '2026-10-15T18:00:00.000Z');
   assert.equal(first('Spot'), '2026-10-16T12:00:00.000Z');
 });
+
+test('a series still being backfilled is retried after 30 seconds without inventing history', async t => {
+  const directory = temp(t); let now = Date.parse(at), calls = 0;
+  const {fetchImpl} = fixture({clock: () => now, spotEvents: params => {
+    calls++;
+    if (calls === 1) return {coverage: null};
+    const items = [{availability_zone: 'a', effective_at: new Date(now - 89 * 86400000).toISOString(), price_hourly: '.7'}];
+    return {kind: 'price_change_events', unit: 'USD / instance-hour', total: 1, items,
+      coverage: {since: params.get('since'), until: params.get('until')}};
+  }});
+  const service = createCapacityPriceService({env: config, dataDir: directory, fetchImpl, clock: () => now});
+  t.after(() => service.close()); await service.sync();
+  const query = () => service.query({gpuModel: 'A10G', gpuCount: 1, period: '3M'});
+  query(); await service.settled();
+  assert.equal(calls, 1);
+  assert(!query().points.some(p => Date.parse(p.time) < now - 86400000 && p.values.Spot.value !== null));
+  now += 30001; query(); await service.settled();
+  assert.equal(calls, 2);
+  assert(query().points.some(p => p.values.Spot.value === .7));
+});

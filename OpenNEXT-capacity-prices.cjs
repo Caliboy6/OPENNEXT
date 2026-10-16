@@ -409,6 +409,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
         if (page >= 100 || closed) throw Error('Incomplete Spot history');
         query.set('offset', String(page * 5000));
         const data = await get(new URL('/v1/prices/aws-spot-history?' + query, botUrl).href, true);
+        if (data.coverage === null) {const error = Error('Spot history backfill pending'); error.pending = true; throw error;}
         if (data.kind !== 'price_change_events' || data.unit !== 'USD / instance-hour' ||
             !data.coverage || !Array.isArray(data.items) || !Number.isInteger(data.total)) throw Error('Invalid Spot history');
         coverage = data.coverage; events.push(...data.items);
@@ -439,7 +440,10 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
       if (closed) return;
       spotHistory.set(group, {segments, from, to, fetchedAt: clock()});
       persist(); errors.delete(key);
-    }).catch(() => {importFailures.set(key, clock()); errors.add(key);}).finally(() => importing.delete(key));
+    }).catch(error => {
+      // A newly deployed bot may still be filling this series; check again on the next page poll.
+      importFailures.set(key, clock() - (error.pending ? HISTORY_RETRY - 30000 : 0)); errors.add(key);
+    }).finally(() => importing.delete(key));
     historyTail = work; importing.set(key, work);
   }
 

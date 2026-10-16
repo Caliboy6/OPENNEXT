@@ -60,7 +60,7 @@ The chart uses 5-minute buckets for 1D, 30-minute for 1W, 2-hour for 1M, 6-hour 
 
 Files in `.opennext-data/`, excluded from Git and static HTTP access:
 
-- `capacity-state.json`: offering specifications, open segments, the latest quotes the offerings whose bot observations have been imported, and the cached AWS Spot intervals. Version 2 state is upgraded without losing observations; old import markers are invalidated for the wider history window. It is rewritten atomically after each sync (about 0.5 MB).
+- `capacity-state.json`: offering specifications, open segments, the latest quotes, the offerings whose bot observations have been imported, and the cached AWS Spot intervals. Version 2 state is upgraded without losing observations; old import markers are invalidated for the wider history window. It is rewritten atomically after each sync or history import. Size depends on the number of cached offerings and price changes.
 - `capacity-segments.jsonl`: closed segments, append-only. It is compacted daily to one year and at most 500,000 segments.
 
 A partial failure keeps existing history and reports partial coverage. If one catalog page fails, quotes from the pages that arrived are still used. Monitor the source schemas: the AWS and Azure feeds are public but not versioned for this use.
