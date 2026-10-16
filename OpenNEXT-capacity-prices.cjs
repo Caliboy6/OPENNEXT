@@ -17,10 +17,10 @@ const SEGMENT_GAP = 15 * MINUTE;
 const BOT_TTL = 15 * MINUTE, PUBLIC_TTL = 2 * HOUR, LIST_TTL = 13 * HOUR;
 const RETENTION = 365 * DAY, MAX_SEGMENTS = 500000;
 // Bot history is imported once per reference offering, newest first, within these bounds.
-const HISTORY_SPAN = 30 * DAY, HISTORY_PAGES = 30, HISTORY_RETRY = 10 * MINUTE;
+const HISTORY_SPAN = 90 * DAY, HISTORY_PAGES = 100, HISTORY_RETRY = 10 * MINUTE;
 // [window, bucket]: coarser buckets keep every period at a few hundred points.
 const PERIODS = {'1D': [DAY, 5 * MINUTE], '1W': [7 * DAY, 30 * MINUTE], '1M': [30 * DAY, 2 * HOUR],
-  '3M': [90 * DAY, 6 * HOUR], '1Y': [365 * DAY, DAY], ALL: [365 * DAY, DAY]};
+  '3M': [90 * DAY, 6 * HOUR]};
 const AREAS = new Set(AWS_REGIONS.map(([id]) => id));
 // Azure regions are mapped onto chart areas only where the geography is equivalent.
 const AZURE_AREAS = {eastus: 'us-east-1', eastus2: 'us-east-1', westus2: 'us-west-2', northeurope: 'eu-west-1',
@@ -169,7 +169,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
   // Private state: group specs, open segments and the latest quotes per source. Closed segments are
   // appended to a log and only rewritten during compaction.
   const groups = new Map(), open = new Map(), archive = new Map();
-  const imported = new Set();
+  const imported = new Set(), spotHistory = new Map();
   let latest = {bot: [], aws: [], azure: []}, lastSync = null, publicFetchedAt = null, lastCompaction = 0, closedCount = 0, appends = [];
   const segmentKey = (group, term) => group + '\u0000' + term;
   function addClosed(segment) {
@@ -184,11 +184,12 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
   }
   try {
     const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    if (saved.version === 2) {
+    if ([2, 3].includes(saved.version)) {
       for (const [key, spec] of Object.entries(saved.groups || {})) groups.set(key, spec);
       for (const segment of saved.open || []) open.set(segmentKey(segment.g, segment.t), segment);
       latest = {...latest, ...saved.latest}; lastSync = saved.lastSync; publicFetchedAt = saved.publicFetchedAt;
-      for (const group of saved.imported || []) imported.add(group);
+      if (saved.version === 3) for (const group of saved.imported || []) imported.add(group);
+      for (const [group, history] of Object.entries(saved.spotHistory || {})) spotHistory.set(group, history);
     }
   } catch {}
   try {
@@ -203,8 +204,8 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
   function persist() {
     if (appends.length) {fs.appendFileSync(logFile, appends.map(s => JSON.stringify([s.g, s.t, s.v, s.f, s.l])).join('\n') + '\n', {mode: 0o600}); appends = [];}
     const temp = stateFile + '.tmp';
-    fs.writeFileSync(temp, JSON.stringify({version: 2, groups: Object.fromEntries(groups), open: [...open.values()],
-      latest, lastSync, publicFetchedAt, imported: [...imported]}), {mode: 0o600});
+    fs.writeFileSync(temp, JSON.stringify({version: 3, groups: Object.fromEntries(groups), open: [...open.values()],
+      latest, lastSync, publicFetchedAt, imported: [...imported], spotHistory: Object.fromEntries(spotHistory)}), {mode: 0o600});
     fs.renameSync(temp, stateFile);
   }
   function compact(now) {
@@ -394,6 +395,54 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     importing.set(group, work);
   }
 
+  // AWS events describe effective prices until the next change, even when changes are days apart.
+  function importSpotChanges(group) {
+    const [provider, cloud, sku, region] = group.split('|'), key = 'spot:' + group;
+    if (provider !== 'aws' || cloud !== 'aws' || !configured || closed || importing.has(key) ||
+        clock() - (spotHistory.get(group)?.fetchedAt ?? -Infinity) < HISTORY_RETRY ||
+        clock() - (importFailures.get(key) ?? -Infinity) < HISTORY_RETRY) return;
+    const work = historyTail.then(async () => {
+      const end = clock(), start = end - HISTORY_SPAN;
+      const query = new URLSearchParams({region, sku, since: iso(start), until: iso(end), limit: '5000'});
+      const events = []; let coverage;
+      for (let page = 0; ; page++) {
+        if (page >= 100 || closed) throw Error('Incomplete Spot history');
+        query.set('offset', String(page * 5000));
+        const data = await get(new URL('/v1/prices/aws-spot-history?' + query, botUrl).href, true);
+        if (data.kind !== 'price_change_events' || data.unit !== 'USD / instance-hour' ||
+            !data.coverage || !Array.isArray(data.items) || !Number.isInteger(data.total)) throw Error('Invalid Spot history');
+        coverage = data.coverage; events.push(...data.items);
+        if (events.length >= data.total) break;
+        if (!data.items.length) throw Error('Incomplete Spot history');
+      }
+      const from = Math.max(start, Date.parse(coverage.since)), to = Math.min(end, Date.parse(coverage.until));
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) throw Error('Invalid Spot coverage');
+      const changes = new Map(), zones = new Map(), segments = [], count = groups.get(group)?.count;
+      if (!(count > 0)) throw Error('Invalid GPU count');
+      for (const event of events) {
+        const at = Date.parse(event.effective_at), price = Number(event.price_hourly);
+        if (!Number.isFinite(at) || !(price > 0) || !Number.isFinite(price) || typeof event.availability_zone !== 'string') throw Error('Invalid Spot event');
+        if (at > to) continue;
+        const time = Math.max(from, at);
+        if (!changes.has(time)) changes.set(time, []);
+        changes.get(time).push({at, zone: event.availability_zone, price});
+      }
+      const times = [...changes.keys()].sort((a, b) => a - b);
+      for (let i = 0; i < times.length; i++) {
+        const time = times[i];
+        for (const event of changes.get(time).sort((a, b) => a.at - b.at)) zones.set(event.zone, event.price);
+        const last = i + 1 < times.length ? times[i + 1] - 1 : to;
+        const value = round(Math.min(...zones.values()) / count), previous = segments.at(-1);
+        if (previous?.v === value && previous.l + 1 === time) previous.l = last;
+        else segments.push({g: group, t: 'Spot', v: value, f: time, l: last});
+      }
+      if (closed) return;
+      spotHistory.set(group, {segments, from, to, fetchedAt: clock()});
+      persist(); errors.delete(key);
+    }).catch(() => {importFailures.set(key, clock()); errors.add(key);}).finally(() => importing.delete(key));
+    historyTail = work; importing.set(key, work);
+  }
+
   // One reference offering supplies all three terms, so the lines are directly comparable.
   function query(filters = {}) {
     const now = clock();
@@ -408,7 +457,12 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     for (const [group, spec] of groups) {
       if (!matches(spec, filters)) continue;
       const current = (openByGroup.get(group) || []).filter(s => now - s.l <= SEGMENT_GAP);
-      const segments = [...(archive.get(group) || []), ...(openByGroup.get(group) || [])].filter(s => s.l >= from && s.f <= now);
+      const history = spotHistory.get(group);
+      const saved = [...(archive.get(group) || []), ...(openByGroup.get(group) || [])];
+      // Vendor change history takes precedence inside its confirmed coverage. Observations after it stay live.
+      const observed = history ? saved.flatMap(s => s.t !== 'Spot' || s.l < history.from || s.f > history.to ? [s] :
+        [s.f < history.from ? {...s, l: history.from - 1} : null, s.l > history.to ? {...s, f: history.to + 1} : null].filter(Boolean)) : saved;
+      const segments = [...observed, ...(history?.segments || [])].filter(s => s.l >= from && s.f <= now);
       if (!segments.length) continue;
       offerings++;
       // Prefer an offering whose Spot price the bot observes live (published Azure Spot rates are fixed),
@@ -423,7 +477,8 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     }
     const points = [];
     if (reference) {
-      importOffering(reference.group);
+      if (reference.group.startsWith('aws|aws|')) importSpotChanges(reference.group);
+      else importOffering(reference.group);
       // Buckets run from the first to the last observation; a bucket still awaiting its sync is not shown empty.
       const last = Math.min(now, Math.max(...reference.segments.map(s => s.l)));
       const first = Math.floor(Math.max(from, Math.min(...reference.segments.map(s => s.f))) / bucket) * bucket;

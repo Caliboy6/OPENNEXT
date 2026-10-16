@@ -14,7 +14,7 @@ node --env-file=.env.local OpenNEXT-preview-server.cjs
 
 The bridge uses Node's own HTTP client, which ignores system and `HTTP(S)_PROXY` settings. Each catalog page has a 90-second timeout. The bot compresses catalog pages with gzip (about 50 KB per 1,000 offers), but an older bot sends roughly 1.2 MB per page and can time out on slow links.
 
-The public endpoint is `GET /api/pricing/capacity-history`. Filters: `gpuModel`, `gpuCount`, `gpuMemoryGb`, `formFactor`, `region`, `period` (`1D`, `1W`, `1M`, `3M`, `1Y`, `ALL`). Periods select saved observations; they do not generate a full period of data. An example preview is `/?gpu=A10G&count=1#terminal/market`.
+The public endpoint is `GET /api/pricing/capacity-history`. Filters: `gpuModel`, `gpuCount`, `gpuMemoryGb`, `formFactor`, `region`, `period` (`1D`, `1W`, `1M`, `3M`). The default is `1M`. `3M` means the most recent 90 days. Periods select real saved or vendor-published history; missing history stays empty. An example preview is `/?gpu=A10G&count=1#terminal/market`.
 
 ## Comparison basis
 
@@ -49,17 +49,18 @@ History is stored as price segments: a value together with the first and last ti
 Where history comes from:
 
 - **Azure**: each retail price carries the date it took effect (`effectiveStartDate`). A rate's segment starts at that date, limited to the one-year retention window. This is the published validity of the rate, not an observation.
-- **SpotOrderBot**: the first time an offering is the chart's reference, its saved observations are imported once from `/v1/prices/history`, filtered by provider, cloud, SKU and region. The import covers up to 30 days and 30,000 rows, newest first, and fills only the time before the offering's first recorded segment. A failed import is retried after 10 minutes.
+- **AWS Spot**: the bot backfills the vendor's most recent 90 days into its configured SQLite, MySQL or DynamoDB storage, independently of current offer catalogs. The bridge reads `/v1/prices/aws-spot-history` for the reference SKU and Region, including all pages and the effective predecessor at the start. A zone's price remains valid until the next change, even when changes are days apart. At every change the bridge recomputes the lowest zone price; it never takes a minimum over obsolete zone quotes. Reconstructed intervals take precedence inside the bot's confirmed coverage. Live observations after that coverage remain visible. The selected offering's history cache refreshes every ten minutes and is saved in private state; the bot refreshes its durable history daily. Failed imports preserve the previous cache and retry after ten minutes. Newly introduced instances may have shorter histories.
+- **Other SpotOrderBot providers**: saved observations are imported once per reference offering from `/v1/prices/history`, filtered by provider, cloud, SKU and Region, up to 90 days and 100,000 rows. Only the time before the first locally recorded segment is filled. Sparse observations are not extended across unobserved gaps. A failed import retries after ten minutes.
 - **AWS On-demand and Reserved from the bot**: the line starts at the price list's `effectiveDate`. AWS sets this to the price-list version, not to when the rate first applied: currently the first day of the month for On-demand and the publication day for Reserved. It therefore shows only that the rate has applied at least since then.
 - **AWS public pricing JSON**: no effective date, so these lines start at the first collection.
 
 Current catalog prices are never written into past time.
 
-The chart uses 5-minute buckets for 1D, 30-minute for 1W, 2-hour for 1M, 6-hour for 3M and daily for 1Y. Each bucket shows the lowest value observed in it. Buckets run from the first to the last observation. Empty buckets in between stay empty and break the line.
+The chart uses 5-minute buckets for 1D, 30-minute for 1W, 2-hour for 1M, 6-hour for 3M. Each bucket shows the lowest value observed in it. Buckets run from the first to the last observation. Empty buckets in between stay empty and break the line.
 
 Files in `.opennext-data/`, excluded from Git and static HTTP access:
 
-- `capacity-state.json`: offering specifications, open segments, the latest quotes and the offerings whose bot history has been imported. It is rewritten atomically after each sync (about 0.5 MB).
+- `capacity-state.json`: offering specifications, open segments, the latest quotes the offerings whose bot observations have been imported, and the cached AWS Spot intervals. Version 2 state is upgraded without losing observations; old import markers are invalidated for the wider history window. It is rewritten atomically after each sync (about 0.5 MB).
 - `capacity-segments.jsonl`: closed segments, append-only. It is compacted daily to one year and at most 500,000 segments.
 
 A partial failure keeps existing history and reports partial coverage. If one catalog page fails, quotes from the pages that arrived are still used. Monitor the source schemas: the AWS and Azure feeds are public but not versioned for this use.

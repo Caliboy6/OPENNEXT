@@ -61,7 +61,7 @@ function createPricingRouter(service,{env=process.env,importedHistory=importedSp
           const query=importedFilters(url);
           for(const field of ['gpuCount','gpuMemoryGb'])if(query[field]!==undefined&&(!Number.isFinite(Number(query[field]))||Number(query[field])<0)){send(res,400,{error:'Invalid GPU specification'});return true;}
           if(query.gpuCount!==undefined&&!Number.isInteger(Number(query.gpuCount))){send(res,400,{error:'Invalid GPU count'});return true;}
-          if(query.period&&!['1D','1W','1M','3M','1Y','ALL'].includes(query.period)){send(res,400,{error:'Invalid history period'});return true;}
+          if(query.period&&!['1D','1W','1M','3M'].includes(query.period)){send(res,400,{error:'Invalid history period'});return true;}
           send(res,200,capacity.query(query));return true;
         }
         if(path==='/api/pricing/imported-history'){send(res,200,await importedHistory.query(importedFilters(url)));return true;}

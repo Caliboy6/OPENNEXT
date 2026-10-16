@@ -65,7 +65,7 @@ test('Azure retail prices yield Spot, On-demand and hourly one-year Reserved for
   assert.equal(normalizeAzure([azureItem('NV6ads A10 v5', 'Consumption', 1, {armSkuName: 'Standard_NV6ads_A10_v5'})], 'eastus', now).length, 0);
 });
 
-function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = () => false, clock = () => Date.parse(at), history = () => []} = {}) {
+function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = () => false, clock = () => Date.parse(at), history = () => [], spotEvents = () => null} = {}) {
   const requests = [];
   const fetchImpl = async (url, options) => {
     requests.push({url: String(url), options});
@@ -75,6 +75,7 @@ function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = ()
       if (botFails()) return new Response('{}', {status: 503});
       assert.equal(options.method, 'GET');
       assert.equal(options.headers.Authorization, 'Bearer fixture-only-secret');
+      if (parsed.pathname === '/v1/prices/aws-spot-history') {const data = spotEvents(parsed.searchParams); return new Response(JSON.stringify(data || {kind: 'price_change_events', unit: 'USD / instance-hour', total: 0, items: [], coverage: {since: parsed.searchParams.get('since'), until: parsed.searchParams.get('until')}}));}
       if (parsed.pathname === '/v1/prices/history') {const items = history(parsed.searchParams); return new Response(JSON.stringify({items, total: items.length}));}
       const offset = Number(parsed.searchParams.get('offset'));
       if (offset && pageFails()) return new Response('{}', {status: 503});
@@ -178,38 +179,43 @@ test('a failed catalog page keeps quotes from the pages that arrived', async t =
   assert.equal(result.meta.sourceIssue, true);
 });
 
-test('published Azure rates start at their effective date and bot history is imported per offering', async t => {
-  const directory = temp(t);
-  const now = Date.parse(at), historyRequests = [];
-  const history = params => {
-    historyRequests.push(Object.fromEntries(params));
-    // Two days of saved Spot observations for the reference offering, plus a row from another offering.
-    return [...Array.from({length: 4}, (_, i) => ({...offer, price_hourly: i < 2 ? '0.7' : '0.6', observed_at: new Date(now - (48 - i * 12) * 3600000).toISOString()})),
-      {...offer, sku: 'g5.2xlarge', price_hourly: '0.01', observed_at: new Date(now - 3600000).toISOString()}];
+test('AWS change history covers 90 days, reduces zones at each change and persists across restarts', async t => {
+  const directory = temp(t), now = Date.parse(at), requests = [];
+  const start = now - 90 * 86400000;
+  const event = (zone, days, price) => ({availability_zone: zone, effective_at: new Date(start + days * 86400000).toISOString(), price_hourly: price});
+  const spotEvents = params => {
+    requests.push(Object.fromEntries(params));
+    const items = [event('a', -1, '0.7'), event('b', -2, '0.8'), event('a', 10, '0.9'), event('b', 20, '0.6'), event('a', 80, '0.5')];
+    return {kind: 'price_change_events', unit: 'USD / instance-hour', total: items.length, items,
+      coverage: {since: new Date(start).toISOString(), until: new Date(now - 300000).toISOString()}};
   };
-  const {fetchImpl} = fixture({history});
-  const service = createCapacityPriceService({env: config, dataDir: directory, fetchImpl, clock: () => now});
-  t.after(() => service.close());
+  const {fetchImpl} = fixture({spotEvents});
+  const make = () => createCapacityPriceService({env: config, dataDir: directory, fetchImpl, clock: () => now});
+  let service = make();
   await service.sync();
-
-  const azure = service.query({gpuModel: 'A100', gpuCount: 1, gpuMemoryGb: 80, region: 'us-east-1', period: '1Y'});
-  assert.equal(azure.points[0].time, '2026-01-01T00:00:00.000Z');
+  const azure = service.query({gpuModel: 'A100', gpuCount: 1, gpuMemoryGb: 80, region: 'us-east-1', period: '3M'});
+  assert.equal(azure.points[0].time, '2026-07-18T12:00:00.000Z');
   assert(TERMS_PRESENT(azure.points[0]));
-
-  service.query({gpuModel: 'A10G', gpuCount: 1, period: '1W'});
+  service.query({gpuModel: 'A10G', gpuCount: 1, period: '3M'});
   await service.settled();
-  assert.equal(historyRequests.length, 1);
-  assert.deepEqual([historyRequests[0].provider, historyRequests[0].cloud, historyRequests[0].sku, historyRequests[0].region], ['aws', 'aws', 'g5.xlarge', 'us-west-2']);
-  const result = service.query({gpuModel: 'A10G', gpuCount: 1, period: '1W'});
-  const spots = result.points.map(point => point.values.Spot.value).filter(value => value !== null);
-  assert.equal(spots[0], .7);
-  assert(spots.includes(.6));
-  assert(!spots.includes(.01));
-  // The import runs once per offering.
-  service.query({gpuModel: 'A10G', gpuCount: 1, period: '1W'});
+  const result = service.query({gpuModel: 'A10G', gpuCount: 1, period: '3M'});
+  const valueAt = days => result.points.find(point => Date.parse(point.time) >= start + days * 86400000).values.Spot.value;
+  assert.equal(valueAt(1), .7);
+  assert.equal(valueAt(11), .8);
+  assert.equal(valueAt(21), .6);
+  assert.equal(valueAt(81), .5);
+  assert(result.points.length >= 360);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].since, new Date(start).toISOString());
+  assert.equal(result.latest.Spot.value, .5);
+  assert.doesNotMatch(JSON.stringify(result), /provider|aws|xlarge|availability_zone/i);
+  await service.close();
+  service = make(); t.after(() => service.close());
+  assert.equal(service.query({gpuModel: 'A10G', gpuCount: 1, period: '3M'}).points[0].values.Spot.value, .7);
   await service.settled();
-  assert.equal(historyRequests.length, 1);
+  assert.equal(requests.length, 1);
 });
+
 const TERMS_PRESENT = point => ['Spot', 'On-demand', 'Reserved'].every(term => point.values[term].value !== null);
 
 test('bot list prices supply On-demand and one-year no-upfront Reserved with their effective dates', async t => {
