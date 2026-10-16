@@ -113,7 +113,7 @@ function renderLanding(locale = 'en') {
   locale = 'en';
   const c = getCopy(locale);
   return `<div class="public-page" lang="${locale}">
-    <header class="public-header"><div class="public-header-inner">${brandLink()}<nav class="public-nav" aria-label="${c.market}"><button data-public-action="scroll" data-section="market">${c.market}</button><button data-public-action="scroll" data-section="how-it-works">${c.how}</button><button data-public-action="scroll" data-section="suppliers">${c.suppliers}</button></nav><div class="public-header-actions"><button class="on-button on-button-primary on-button-small" data-public-action="signin">${c.signin}</button></div></div></header>
+    <header class="public-header"><div class="public-header-inner">${brandLink()}<nav class="public-nav" aria-label="${c.market}"><button data-public-action="scroll" data-section="market">${c.market}</button><button data-public-action="scroll" data-section="how-it-works">${c.how}</button><button data-public-action="scroll" data-section="suppliers">${c.suppliers}</button></nav><div class="public-header-actions"></div></div></header>
     ${gpuTicker()}
     <main>
       <section class="public-hero public-container"><div class="public-hero-copy"><p class="on-eyebrow">${c.eyebrow}</p><h1>${c.hero}</h1><p class="public-hero-description">${c.intro}</p><div class="public-hero-actions">${cta(c.explore)}${cta(c.post, 'supply', 'outline')}</div></div>${capacityIllustration('network')}</section>
