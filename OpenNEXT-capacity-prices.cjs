@@ -169,7 +169,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
   // Private state: group specs, open segments and the latest quotes per source. Closed segments are
   // appended to a log and only rewritten during compaction.
   const groups = new Map(), open = new Map(), archive = new Map();
-  const imported = new Set(), spotHistory = new Map();
+  const imported = new Set(), spotHistory = new Map(), listHistory = new Map();
   let latest = {bot: [], aws: [], azure: []}, lastSync = null, publicFetchedAt = null, lastCompaction = 0, closedCount = 0, appends = [];
   const segmentKey = (group, term) => group + '\u0000' + term;
   function addClosed(segment) {
@@ -190,6 +190,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
       latest = {...latest, ...saved.latest}; lastSync = saved.lastSync; publicFetchedAt = saved.publicFetchedAt;
       if (saved.version === 3) for (const group of saved.imported || []) imported.add(group);
       for (const [group, history] of Object.entries(saved.spotHistory || {})) spotHistory.set(group, history);
+      for (const [group, history] of Object.entries(saved.listHistory || {})) listHistory.set(group, history);
     }
   } catch {}
   try {
@@ -205,7 +206,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     if (appends.length) {fs.appendFileSync(logFile, appends.map(s => JSON.stringify([s.g, s.t, s.v, s.f, s.l])).join('\n') + '\n', {mode: 0o600}); appends = [];}
     const temp = stateFile + '.tmp';
     fs.writeFileSync(temp, JSON.stringify({version: 3, groups: Object.fromEntries(groups), open: [...open.values()],
-      latest, lastSync, publicFetchedAt, imported: [...imported], spotHistory: Object.fromEntries(spotHistory)}), {mode: 0o600});
+      latest, lastSync, publicFetchedAt, imported: [...imported], spotHistory: Object.fromEntries(spotHistory), listHistory: Object.fromEntries(listHistory)}), {mode: 0o600});
     fs.renameSync(temp, stateFile);
   }
   function compact(now) {
@@ -447,6 +448,47 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     historyTail = work; importing.set(key, work);
   }
 
+  function importListHistory(group) {
+    const [provider, cloud, sku, region] = group.split('|'), key = 'list:' + group;
+    if (provider !== 'aws' || cloud !== 'aws' || !configured || closed || importing.has(key) ||
+        clock() - (listHistory.get(group)?.fetchedAt ?? -Infinity) < HISTORY_RETRY ||
+        clock() - (importFailures.get(key) ?? -Infinity) < HISTORY_RETRY) return;
+    const work = historyTail.then(async () => {
+      const end = clock(), start = end - HISTORY_SPAN, count = groups.get(group)?.count;
+      const query = new URLSearchParams({region, sku, since: iso(start), until: iso(end), limit: '5000'});
+      const segments = []; let pending = false;
+      for (let page = 0, received = 0; ; page++) {
+        if (page >= 100 || closed) throw Error('Incomplete list history');
+        query.set('offset', String(page * 5000));
+        const data = await get(new URL('/v1/prices/aws-list-history?' + query, botUrl).href, true);
+        if (data.coverage === null) {const error = Error('List history backfill pending'); error.pending = true; throw error;}
+        if (data.kind !== 'published_price_intervals' || data.unit !== 'USD / instance-hour' ||
+            data.commitment?.months !== 12 || data.commitment?.payment !== 'no_upfront' ||
+            !Array.isArray(data.items) || !Number.isInteger(data.total) || !(count > 0)) throw Error('Invalid list history');
+        pending ||= Boolean(data.pending);
+        for (const item of data.items) {
+          const term = {on_demand: 'On-demand', reserved: 'Reserved'}[item.market];
+          const first = Date.parse(item.valid_from), last = Date.parse(item.valid_until), effective = Date.parse(item.effective_at);
+          const price = Number(item.price_hourly);
+          if (!term || ![first, last, effective, price].every(Number.isFinite) || first < effective || last <= first || !(price > 0) ||
+              (item.market === 'reserved' && !chartReserved({details: item}))) throw Error('Invalid list interval');
+          const from = Math.max(start, first), to = Math.min(end, last) - 1;
+          if (from <= to) segments.push({g: group, t: term, v: round(price / count), f: from, l: to});
+        }
+        received += data.items.length;
+        if (received >= data.total) break;
+        if (!data.items.length) throw Error('Incomplete list history');
+      }
+      if (closed) return;
+      listHistory.set(group, {segments, fetchedAt: clock() - (pending ? HISTORY_RETRY - 30000 : 0)});
+      if (pending) errors.add(key); else errors.delete(key);
+      persist();
+    }).catch(error => {
+      importFailures.set(key, clock() - (error.pending ? HISTORY_RETRY - 30000 : 0)); errors.add(key);
+    }).finally(() => importing.delete(key));
+    historyTail = work; importing.set(key, work);
+  }
+
   // One reference offering supplies all three terms, so the lines are directly comparable.
   function query(filters = {}) {
     const now = clock();
@@ -466,7 +508,12 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
       // Vendor change history takes precedence inside its confirmed coverage. Observations after it stay live.
       const observed = history ? saved.flatMap(s => s.t !== 'Spot' || s.l < history.from || s.f > history.to ? [s] :
         [s.f < history.from ? {...s, l: history.from - 1} : null, s.l > history.to ? {...s, f: history.to + 1} : null].filter(Boolean)) : saved;
-      const segments = [...observed, ...(history?.segments || [])].filter(s => s.l >= from && s.f <= now);
+      const tariffs = listHistory.get(group)?.segments || [];
+      // Replace only verified tariff intervals; gaps can still contain genuine bot observations.
+      let merged = observed;
+      for (const tariff of tariffs) merged = merged.flatMap(s => s.t !== tariff.t || s.l < tariff.f || s.f > tariff.l ? [s] :
+        [s.f < tariff.f ? {...s, l: tariff.f - 1} : null, s.l > tariff.l ? {...s, f: tariff.l + 1} : null].filter(Boolean));
+      const segments = [...merged, ...(history?.segments || []), ...tariffs].filter(s => s.l >= from && s.f <= now);
       if (!segments.length) continue;
       offerings++;
       // Prefer an offering whose Spot price the bot observes live (published Azure Spot rates are fixed),
@@ -481,7 +528,7 @@ function createCapacityPriceService({env = process.env, dataDir, fetchImpl = glo
     }
     const points = [];
     if (reference) {
-      if (reference.group.startsWith('aws|aws|')) importSpotChanges(reference.group);
+      if (reference.group.startsWith('aws|aws|')) {importSpotChanges(reference.group); importListHistory(reference.group);}
       else importOffering(reference.group);
       // Buckets run from the first to the last observation; a bucket still awaiting its sync is not shown empty.
       const last = Math.min(now, Math.max(...reference.segments.map(s => s.l)));

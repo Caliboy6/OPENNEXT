@@ -65,7 +65,7 @@ test('Azure retail prices yield Spot, On-demand and hourly one-year Reserved for
   assert.equal(normalizeAzure([azureItem('NV6ads A10 v5', 'Consumption', 1, {armSkuName: 'Standard_NV6ads_A10_v5'})], 'eastus', now).length, 0);
 });
 
-function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = () => false, clock = () => Date.parse(at), history = () => [], spotEvents = () => null} = {}) {
+function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = () => false, clock = () => Date.parse(at), history = () => [], spotEvents = () => null, listIntervals = () => null} = {}) {
   const requests = [];
   const fetchImpl = async (url, options) => {
     requests.push({url: String(url), options});
@@ -75,6 +75,7 @@ function fixture({botFails = () => false, botPrice = () => '0.5', pageFails = ()
       if (botFails()) return new Response('{}', {status: 503});
       assert.equal(options.method, 'GET');
       assert.equal(options.headers.Authorization, 'Bearer fixture-only-secret');
+      if (parsed.pathname === '/v1/prices/aws-list-history') {const data = listIntervals(parsed.searchParams); return new Response(JSON.stringify(data || {kind: 'published_price_intervals', unit: 'USD / instance-hour', commitment: {months: 12, payment: 'no_upfront'}, total: 0, items: [], coverage: {since: parsed.searchParams.get('since'), until: parsed.searchParams.get('until')}, pending: false}));}
       if (parsed.pathname === '/v1/prices/aws-spot-history') {const data = spotEvents(parsed.searchParams); return new Response(JSON.stringify(data || {kind: 'price_change_events', unit: 'USD / instance-hour', total: 0, items: [], coverage: {since: parsed.searchParams.get('since'), until: parsed.searchParams.get('until')}}));}
       if (parsed.pathname === '/v1/prices/history') {const items = history(parsed.searchParams); return new Response(JSON.stringify({items, total: items.length}));}
       const offset = Number(parsed.searchParams.get('offset'));
@@ -270,4 +271,34 @@ test('a series still being backfilled is retried after 30 seconds without invent
   now += 30001; query(); await service.settled();
   assert.equal(calls, 2);
   assert(query().points.some(p => p.values.Spot.value === .7));
+});
+
+test('published On-demand and Reserved intervals fill 90-day history without bridging unverified dates', async t => {
+  const directory = temp(t), now = Date.parse(at), day = 86400000, start = now - 90 * day;
+  let requests = 0;
+  const interval = (market, from, to, price) => ({market, valid_from: new Date(start + from * day).toISOString(), valid_until: new Date(start + to * day).toISOString(), effective_at: new Date(start + from * day).toISOString(), price_hourly: price,
+    ...(market === 'reserved' ? {lease_contract_length: '1yr', purchase_option: 'No Upfront', offering_class: 'standard'} : {}), version: 'private-version'});
+  const listIntervals = params => {
+    requests++;
+    const items = [interval('on_demand', 0, 45, '1.2'), interval('on_demand', 45, 90, '1.006'), interval('reserved', 0, 20, '.8'), interval('reserved', 30, 40, '.7')];
+    return {kind: 'published_price_intervals', unit: 'USD / instance-hour', commitment: {months: 12, payment: 'no_upfront'}, items, total: items.length, coverage: {since: params.get('since'), until: params.get('until')}, pending: false};
+  };
+  const {fetchImpl} = fixture({listIntervals});
+  const make = () => createCapacityPriceService({env: config, dataDir: directory, fetchImpl, clock: () => now});
+  let service = make(); await service.sync();
+  const query = () => service.query({gpuModel: 'A10G', gpuCount: 1, period: '3M'});
+  query(); await service.settled();
+  let result = query();
+  const valueAt = (days, term) => result.points.find(p => Date.parse(p.time) >= start + days * day).values[term].value;
+  assert.equal(valueAt(1, 'On-demand'), 1.2);
+  assert.equal(valueAt(50, 'On-demand'), 1.006);
+  assert.equal(valueAt(1, 'Reserved'), .8);
+  assert.equal(valueAt(25, 'Reserved'), null);
+  assert.equal(valueAt(35, 'Reserved'), .7);
+  assert.equal(result.latest['On-demand'].value, 1.006);
+  assert.doesNotMatch(JSON.stringify(result), /private-version|aws|provider|xlarge|rate_code/);
+  await service.close(); service = make(); t.after(() => service.close());
+  result = query(); await service.settled();
+  assert.equal(valueAt(1, 'On-demand'), 1.2);
+  assert.equal(requests, 1);
 });
