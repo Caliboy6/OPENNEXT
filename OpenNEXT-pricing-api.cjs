@@ -3,7 +3,7 @@ const crypto=require('node:crypto');
 const importedSpotHistory=require('./OpenNEXT-spot-history.cjs');
 
 function equal(a,b){const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y);}
-function createPricingRouter(service,{env=process.env,importedHistory=importedSpotHistory}={}){
+function createPricingRouter(service,{env=process.env,importedHistory=importedSpotHistory,capacity}={}){
   const secret=crypto.randomBytes(32),sessions=new Map();
   const token=String(env.OPENNEXT_ADMIN_TOKEN||'');
   const tokenReady=token.length>=24;
@@ -56,6 +56,14 @@ function createPricingRouter(service,{env=process.env,importedHistory=importedSp
     try{
       if(path.startsWith('/api/pricing/')){
         if(req.method!=='GET'){send(res,405,{error:'Read-only endpoint'},{Allow:'GET'});return true;}
+        if(path==='/api/pricing/capacity-history'){
+          if(!capacity){send(res,503,{error:'Capacity history is not configured'});return true;}
+          const query=importedFilters(url);
+          for(const field of ['gpuCount','gpuMemoryGb'])if(query[field]!==undefined&&(!Number.isFinite(Number(query[field]))||Number(query[field])<0)){send(res,400,{error:'Invalid GPU specification'});return true;}
+          if(query.gpuCount!==undefined&&!Number.isInteger(Number(query.gpuCount))){send(res,400,{error:'Invalid GPU count'});return true;}
+          if(query.period&&!['1D','1W','1M','3M'].includes(query.period)){send(res,400,{error:'Invalid history period'});return true;}
+          send(res,200,capacity.query(query));return true;
+        }
         if(path==='/api/pricing/imported-history'){send(res,200,await importedHistory.query(importedFilters(url)));return true;}
         if(path==='/api/pricing/history-catalog'){send(res,200,await importedHistory.catalog(importedFilters(url)));return true;}
         if(path==='/api/pricing/prices'){send(res,200,await service.getPrices(filters(url)));return true;}
