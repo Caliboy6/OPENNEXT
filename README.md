@@ -15,6 +15,8 @@ npm start
 - Website and buyer/seller terminal: http://127.0.0.1:4188/
 - Team Operations Console: http://127.0.0.1:4188/admin/
 
+The GPU Market main chart now compares **Spot / On-demand / Reserved** for one reference offering (same GPU configuration, supplier and region), without provider attribution in its public payload or chart. Configure the server-only bot bridge and run `node --env-file=.env.local OpenNEXT-preview-server.cjs` to connect SpotOrderBot. It checks for updates every 30 seconds, uses actual observations only, adds public AWS and Azure tariffs, and treats Reserved as one year with no upfront payment. See [live chart setup and methodology](docs/CAPACITY_CHART.md). The older uploaded Spot dataset remains accessible through its historical API.
+
 If port 4188 is already in use, choose another port:
 
 ```sh
@@ -56,7 +58,8 @@ See [all provider APIs](docs/PROVIDER_APIS.md) and [pricing operations / deploym
 | `OpenNEXT-gci-index-factory.html` | Homepage animation with bundled resources |
 | `OpenNEXT-auth.js` / `.css` | Authentication UI and local preview account flows |
 | `OpenNEXT-terminal.js` / `.css` | Buyer, seller and broker workflows |
-| `OpenNEXT-market-data.js` | Browser client for real price/cache and AWS history APIs |
+| `OpenNEXT-market-data.js` | Browser client for real price/cache and legacy AWS history APIs |
+| `OpenNEXT-capacity-prices.cjs`, `OpenNEXT-capacity-chart.js` / `.css` | Server-only bot bridge, public fixed-tariff collector and live three-type GPU chart |
 | `OpenNEXT-pricing-service.cjs`, `OpenNEXT-pricing-registry.cjs` | Provider adapters, normalization, scheduler, persistent observations and source capabilities |
 | `OpenNEXT-pricing-api.cjs` | Read-only public pricing and protected collector administration |
 | `OpenNEXT-provider-console.js` / `.css` | Provider connections, settings, jobs, logs and collected prices |
@@ -69,7 +72,7 @@ See [all provider APIs](docs/PROVIDER_APIS.md) and [pricing operations / deploym
 ## Data and preview boundaries
 
 - Terminal GPU reference prices use real server-collected AWS and Vultr prices, with Lambda/Shadeform available after credential setup. Whole-instance hourly prices are divided by verified physical GPU count. Catalog pricing does not guarantee stock, delivery speed, ratings or executable quotes; unknown fields stay unreported.
-- AWS history consists of actual collection observations only. It begins when collection starts; longer ranges cannot invent earlier prices. AWS Spot is awaiting IAM credentials. Reserved pricing is not implemented. AWS public scope currently covers Linux/shared/no bundled software in eight configured regions; unknown specifications are excluded and logged.
+- History consists of actual collection observations only. The main chart reads Spot quotes from the configured bot and supplements them with public AWS and Azure tariffs; all three lines come from one offering. Missing coverage remains empty. The separate legacy collector's direct AWS Spot adapter still needs IAM; its original price/history endpoints remain independent. Unknown specifications are excluded rather than inferred.
 - Account balances, local workflow records and legacy Console datasets remain demonstration records, not executed transactions or a published benchmark. Packet Demand is a buyer-demand reference, not a settled Spot-price feed. The homepage's separately dated reference carousel is retained.
 - News currently uses a source-linked, dated editorial snapshot, not a live crawler.
 - Google / GitHub buttons demonstrate account selection; actual OAuth is not connected. Email verification and password-reset steps are preview flows only. Do not use real passwords or private credentials.
